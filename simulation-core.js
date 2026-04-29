@@ -1,74 +1,41 @@
-// simulation-core.js
+// --- Config ---
+const DEPT_NAMES = ["Sales", "Ops", "Finance", "Product"];
+const MODES = { NORMAL: "Normal", TENSION: "Tension", CRISIS: "Crisis", RECOVERY: "Recovery", COOLDOWN: "Cooldown" };
 
-export function clamp(v, lo, hi) {
-  return Math.max(lo, Math.min(hi, v));
-}
-
-export function rand(lo, hi) {
-  return lo + Math.random() * (hi - lo);
-}
+// --- Helpers ---
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const rand = (lo, hi) => lo + Math.random() * (hi - lo);
 
 export const DEFAULT_CONFIG = {
-  ticks: 120,
+  ticks: 720,
   gamingRate: 0.02,
+  gamingDecay: { Normal: 0.01, Tension: 0.02, Crisis: 0.03 },
   shadowNoise: 0.02,
-  shockDurationMs: 1800,
   thresholds: {
     tension: 0.25,
-    crisis: 0.45,
-    latency: 3,
-    reEscalation: 3
+    crisis: 0.50,
+    reEscalation: 2,
+    latency: 14
   },
-  gamingDecay: {
-    Normal: 0.0,
-    Tension: 0.01,
-    Crisis: 0.02
-  }
+  shockDurationMs: 150,
+  autoCrisisDaysForRecovery: 30,
+  cooldownDays: 15
 };
 
-function createDept(name) {
-  const reality = rand(0.55, 0.8);
-  const kpi = clamp(reality + rand(0.02, 0.08), 0, 1);
-  const gaming = rand(0.03, 0.12);
-  return { name, reality, kpi, gaming };
-}
-
-export function createInitialState() {
-  const names = ["Finance", "Operations", "Compliance", "R&D"];
-
-  const baselineDepts = names.map(createDept);
-  const ainoDepts = names.map((name) => {
-    const dept = createDept(name);
-    return {
-      ...dept,
-      shadowMetric: clamp(dept.reality + rand(-0.01, 0.01), 0, 1),
-      latency: 0,
-      reEscalations: 0
-    };
-  });
-
+// --- Department init ---
+export function initDept(name) {
   return {
-    tick: 0,
-    mode: "Normal",
-    shockActive: false,
-    forceResetToNormal: false,
-    crisisCount: 0,
-    captureRisk: 0.12,
-    baselineDepts,
-    ainoDepts,
-    history: {
-      baseHealth: [computeOrgHealth(baselineDepts)],
-      ainoHealth: [computeOrgHealth(ainoDepts)],
-      divergence: [
-        ainoDepts.reduce((s, d) => s + Math.abs(d.kpi - d.shadowMetric), 0) /
-          ainoDepts.length
-      ],
-      mode: [0.2],
-      interventions: []
-    }
+    name,
+    kpi: 0.5,
+    reality: 0.5,
+    gaming: 0,
+    shadowMetric: 0.5,
+    latency: 0,
+    reEscalations: 0
   };
 }
 
+// --- Baseline step ---
 export function stepBaselineDept(dept, cfg, shock) {
   const realityDrift = rand(-0.03, 0.03) + (shock ? rand(-0.08, 0) : 0);
   const newReality = clamp(dept.reality + realityDrift, 0, 1);
@@ -81,6 +48,7 @@ export function stepBaselineDept(dept, cfg, shock) {
   return { ...dept, reality: newReality, kpi: newKpi, gaming: newGaming };
 }
 
+// --- AïnO step ---
 export function stepAinoDept(dept, cfg, shock, mode) {
   const realityDrift = rand(-0.03, 0.03) + (shock ? rand(-0.08, 0) : 0);
   const newReality = clamp(dept.reality + realityDrift, 0, 1);
@@ -88,25 +56,45 @@ export function stepAinoDept(dept, cfg, shock, mode) {
   const shadowNoise = rand(-cfg.shadowNoise, cfg.shadowNoise);
   const newShadow = clamp(newReality + shadowNoise, 0, 1);
 
+  // Cooldown mode: reduce gaming, reduce noise, prevent escalation, rebuild trust
+  if (mode === "Cooldown") {
+    const newGaming = clamp(dept.gaming * 0.97, 0, 1);
+    const newKpi = clamp(dept.kpi - 0.002 + rand(-0.005, 0.005), 0, 1);
+    return {
+      ...dept,
+      reality: newReality,
+      kpi: newKpi,
+      gaming: newGaming,
+      shadowMetric: newShadow,
+      latency: 0,
+      reEscalations: Math.max(0, dept.reEscalations - 0.1)
+    };
+  }
+
   const modeFactors = {
-    Normal: { pressure: 1.0, decay: cfg.gamingDecay.Normal },
-    Tension: { pressure: 0.6, decay: cfg.gamingDecay.Tension },
-    Crisis: { pressure: 0.3, decay: cfg.gamingDecay.Crisis }
+    Normal:   { pressure: 1.0, decay: cfg.gamingDecay.Normal },
+    Tension:  { pressure: 0.6, decay: cfg.gamingDecay.Tension },
+    Crisis:   { pressure: 0.3, decay: cfg.gamingDecay.Crisis },
+    Recovery: { pressure: 0.2, decay: cfg.gamingDecay.Crisis }
   };
-  const f = modeFactors[mode];
+  const f = modeFactors[mode] || modeFactors.Normal;
 
   const gamingPressure = 0.015 * f.pressure + dept.gaming * 0.005 * f.pressure;
   const newKpi = clamp(dept.kpi + gamingPressure + rand(-0.01, 0.01), 0, 1);
-
   const newGaming = clamp(dept.gaming + cfg.gamingRate - f.decay, 0, 1);
 
+  // Latency & re-escalations (blocked in Recovery/Cooldown)
   const divergence = Math.abs(newKpi - newShadow);
   let newLatency = dept.latency + 1;
   let newReEsc = dept.reEscalations;
 
-  if (divergence > cfg.thresholds.tension) {
-    if (newLatency > cfg.thresholds.latency) {
-      newReEsc++;
+  if (mode !== "Recovery") {
+    if (divergence > cfg.thresholds.tension) {
+      if (newLatency > cfg.thresholds.latency) {
+        newReEsc++;
+        newLatency = 0;
+      }
+    } else {
       newLatency = 0;
     }
   } else {
@@ -124,7 +112,11 @@ export function stepAinoDept(dept, cfg, shock, mode) {
   };
 }
 
-export function computeMode(depts, cfg) {
+// --- Mode logic ---
+export function computeMode(depts, cfg, prevMode, cooldownRemaining) {
+  // Cooldown and Recovery are managed externally
+  if (prevMode === "Cooldown" || prevMode === "Recovery") return prevMode;
+
   const avgDiv =
     depts.reduce((s, d) => s + Math.abs(d.kpi - d.shadowMetric), 0) /
     depts.length;
@@ -132,14 +124,14 @@ export function computeMode(depts, cfg) {
   const maxReEsc = Math.max(...depts.map(d => d.reEscalations));
 
   if (avgDiv >= cfg.thresholds.crisis || maxReEsc >= cfg.thresholds.reEscalation)
-    return "Crisis";
+    return MODES.CRISIS;
 
-  if (avgDiv >= cfg.thresholds.tension)
-    return "Tension";
+  if (avgDiv >= cfg.thresholds.tension) return MODES.TENSION;
 
-  return "Normal";
+  return MODES.NORMAL;
 }
 
+// --- Org health ---
 export function computeOrgHealth(depts) {
   const avgDiv =
     depts.reduce((s, d) => s + Math.abs(d.kpi - d.reality), 0) / depts.length;
@@ -147,44 +139,121 @@ export function computeOrgHealth(depts) {
   return clamp(1 - avgDiv * 0.9 - avgGaming * 0.3, 0, 1);
 }
 
+// --- Apply recovery effects to departments ---
+export function applyRecoveryToDepts(depts, cfg) {
+  return depts.map(d => ({
+    ...d,
+    gaming: d.gaming * 0.5,
+    reEscalations: 0,
+    latency: 0
+  }));
+}
+
+// --- Initial state ---
+export function createInitialState() {
+  return {
+    tick: 0,
+    baselineDepts: DEPT_NAMES.map(initDept),
+    ainoDepts: DEPT_NAMES.map(initDept),
+    mode: MODES.NORMAL,
+    captureRisk: 0,
+    shockActive: false,
+    crisisDayCount: 0,
+    cooldownRemaining: 0,
+    crisisEventCount: 0,
+    pendingIntervention: false,
+    interventionDelayRemaining: 0,
+    history: {
+      baseHealth: [],
+      ainoHealth: [],
+      divergence: [],
+      mode: [],
+      interventionMarkers: []  // list of tick indices where intervention occurred
+    },
+    shadowNoise: DEFAULT_CONFIG.shadowNoise
+  };
+}
+
+// --- Tick ---
 export function runTick(state, cfg) {
   if (state.tick >= cfg.ticks) return state;
 
-  // hierarchy intervention
-  if (state.forceResetToNormal) {
-    return {
-      ...state,
-      mode: "Normal",
-      forceResetToNormal: false,
-      history: {
-        ...state.history,
-        interventions: [...state.history.interventions, state.tick],
-        mode: [...state.history.mode, 0.2] // Normal intensity
-      },
-      tick: state.tick + 1
-    };
+  const shock = state.shockActive;
+  let currentMode = state.mode;
+  let crisisDayCount = state.crisisDayCount;
+  let cooldownRemaining = state.cooldownRemaining;
+  let crisisEventCount = state.crisisEventCount;
+  let pendingIntervention = state.pendingIntervention;
+  let interventionDelayRemaining = state.interventionDelayRemaining;
+  let shadowNoise = state.shadowNoise !== undefined ? state.shadowNoise : cfg.shadowNoise;
+  let interventionMarkers = [...(state.history.interventionMarkers || [])];
+  let recoveryTriggeredThisTick = false;
+
+  // Handle pending intervention countdown
+  if (pendingIntervention && interventionDelayRemaining > 0) {
+    interventionDelayRemaining--;
+    if (interventionDelayRemaining === 0) {
+      pendingIntervention = false;
+      recoveryTriggeredThisTick = true;
+    }
   }
 
-  const shock = state.shockActive;
+  // Auto-recovery: if in Crisis for 30 days
+  if (currentMode === "Crisis") {
+    crisisDayCount++;
+    if (crisisDayCount >= cfg.autoCrisisDaysForRecovery) {
+      recoveryTriggeredThisTick = true;
+      crisisDayCount = 0;
+    }
+  } else if (currentMode !== "Recovery" && currentMode !== "Cooldown") {
+    crisisDayCount = 0;
+  }
 
-  const newBaseline = state.baselineDepts.map(d =>
-    stepBaselineDept(d, cfg, shock)
-  );
-  const newAino = state.ainoDepts.map(d =>
-    stepAinoDept(d, cfg, shock, state.mode)
-  );
+  let newAino = state.ainoDepts;
+  let newBaseline = state.baselineDepts.map(d => stepBaselineDept(d, cfg, shock));
 
-  const newMode = computeMode(newAino, cfg);
+  // Apply recovery if triggered
+  if (recoveryTriggeredThisTick) {
+    currentMode = "Recovery";
+    newAino = applyRecoveryToDepts(state.ainoDepts, cfg);
+    shadowNoise = shadowNoise * 0.8;
+    crisisDayCount = 0;
+    cooldownRemaining = 0;
+    interventionMarkers = [...interventionMarkers, state.tick];
+    // Step depts in recovery mode
+    newAino = newAino.map(d => stepAinoDept(d, cfg, shock, "Recovery"));
+  } else if (currentMode === "Recovery") {
+    // Recovery lasts 1 tick then transitions to Cooldown
+    currentMode = "Cooldown";
+    cooldownRemaining = cfg.cooldownDays;
+    newAino = state.ainoDepts.map(d => stepAinoDept(d, cfg, shock, "Cooldown"));
+  } else if (currentMode === "Cooldown") {
+    cooldownRemaining--;
+    newAino = state.ainoDepts.map(d => stepAinoDept(d, cfg, shock, "Cooldown"));
+    if (cooldownRemaining <= 0) {
+      currentMode = "Normal";
+      cooldownRemaining = 0;
+    }
+  } else {
+    newAino = state.ainoDepts.map(d => stepAinoDept(d, cfg, shock, currentMode));
+  }
 
-  const crisisCount =
-    newMode === "Crisis"
-      ? state.crisisCount + 1
-      : state.crisisCount;
+  // Compute new mode (only if not in special modes)
+  let newMode = currentMode;
+  if (currentMode !== "Recovery" && currentMode !== "Cooldown") {
+    newMode = computeMode(newAino, cfg, currentMode, cooldownRemaining);
+    // Track crisis events: entering crisis
+    if (newMode === "Crisis" && currentMode !== "Crisis") {
+      crisisEventCount++;
+    }
+  }
 
   const maxReEsc = Math.max(...newAino.map(d => d.reEscalations));
   const riskDelta =
-    newMode === "Crisis" ? 0.01 :
-    newMode === "Tension" ? 0.005 :
+    newMode === "Crisis"   ? 0.01 :
+    newMode === "Tension"  ? 0.005 :
+    newMode === "Cooldown" ? -0.005 :
+    newMode === "Recovery" ? -0.008 :
     -0.003;
 
   const newCapture = clamp(
@@ -200,8 +269,11 @@ export function runTick(state, cfg) {
     newAino.length;
 
   const modeIntensity =
-    newMode === "Normal" ? 0.2 :
-    newMode === "Tension" ? 0.6 : 1.0;
+    newMode === "Normal"   ? 0.2 :
+    newMode === "Tension"  ? 0.6 :
+    newMode === "Crisis"   ? 1.0 :
+    newMode === "Recovery" ? 0.4 :
+    newMode === "Cooldown" ? 0.3 : 0.2;
 
   return {
     ...state,
@@ -209,14 +281,19 @@ export function runTick(state, cfg) {
     baselineDepts: newBaseline,
     ainoDepts: newAino,
     mode: newMode,
-    crisisCount,
     captureRisk: newCapture,
+    crisisDayCount,
+    cooldownRemaining,
+    crisisEventCount,
+    pendingIntervention,
+    interventionDelayRemaining,
+    shadowNoise,
     history: {
       baseHealth: [...state.history.baseHealth, bh],
       ainoHealth: [...state.history.ainoHealth, ah],
       divergence: [...state.history.divergence, div],
       mode: [...state.history.mode, modeIntensity],
-      interventions: [...state.history.interventions]
+      interventionMarkers
     }
   };
 }
