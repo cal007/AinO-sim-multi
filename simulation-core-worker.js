@@ -1,145 +1,141 @@
-// simulation-core-worker.js
+// --- Config ---
+const DEPT_NAMES = ["Sales", "Ops", "Finance", "Product"];
 
-function clamp(v, lo, hi) {
-  return Math.max(lo, Math.min(hi, v));
-}
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+function rand(lo, hi) { return lo + Math.random() * (hi - lo); }
 
-function rand(lo, hi) {
-  return lo + Math.random() * (hi - lo);
+function initDept(name) {
+  return { name, kpi: 0.5, reality: 0.5, gaming: 0, shadowMetric: 0.5, latency: 0, reEscalations: 0 };
 }
 
 function stepBaselineDept(dept, cfg, shock) {
   const realityDrift = rand(-0.03, 0.03) + (shock ? rand(-0.08, 0) : 0);
   const newReality = clamp(dept.reality + realityDrift, 0, 1);
-
   const gamingPressure = 0.015 + dept.gaming * 0.01;
   const newKpi = clamp(dept.kpi + gamingPressure + rand(-0.01, 0.01), 0, 1);
-
   const newGaming = clamp(dept.gaming + cfg.gamingRate, 0, 1);
-
   return { ...dept, reality: newReality, kpi: newKpi, gaming: newGaming };
 }
 
 function stepAinoDept(dept, cfg, shock, mode) {
   const realityDrift = rand(-0.03, 0.03) + (shock ? rand(-0.08, 0) : 0);
   const newReality = clamp(dept.reality + realityDrift, 0, 1);
-
   const shadowNoise = rand(-cfg.shadowNoise, cfg.shadowNoise);
   const newShadow = clamp(newReality + shadowNoise, 0, 1);
 
+  if (mode === "Cooldown") {
+    const newGaming = clamp(dept.gaming * 0.97, 0, 1);
+    const newKpi = clamp(dept.kpi - 0.002 + rand(-0.005, 0.005), 0, 1);
+    return { ...dept, reality: newReality, kpi: newKpi, gaming: newGaming, shadowMetric: newShadow, latency: 0, reEscalations: Math.max(0, dept.reEscalations - 0.1) };
+  }
+
   const modeFactors = {
-    Normal: { pressure: 1.0, decay: cfg.gamingDecay.Normal },
-    Tension: { pressure: 0.6, decay: cfg.gamingDecay.Tension },
-    Crisis: { pressure: 0.3, decay: cfg.gamingDecay.Crisis }
+    Normal:   { pressure: 1.0, decay: cfg.gamingDecay.Normal },
+    Tension:  { pressure: 0.6, decay: cfg.gamingDecay.Tension },
+    Crisis:   { pressure: 0.3, decay: cfg.gamingDecay.Crisis },
+    Recovery: { pressure: 0.2, decay: cfg.gamingDecay.Crisis }
   };
-  const f = modeFactors[mode];
+  const f = modeFactors[mode] || modeFactors.Normal;
 
   const gamingPressure = 0.015 * f.pressure + dept.gaming * 0.005 * f.pressure;
   const newKpi = clamp(dept.kpi + gamingPressure + rand(-0.01, 0.01), 0, 1);
-
   const newGaming = clamp(dept.gaming + cfg.gamingRate - f.decay, 0, 1);
 
   const divergence = Math.abs(newKpi - newShadow);
   let newLatency = dept.latency + 1;
   let newReEsc = dept.reEscalations;
 
-  if (divergence > cfg.thresholds.tension) {
-    if (newLatency > cfg.thresholds.latency) {
-      newReEsc++;
-      newLatency = 0;
-    }
-  } else {
-    newLatency = 0;
-  }
+  if (mode !== "Recovery") {
+    if (divergence > cfg.thresholds.tension) {
+      if (newLatency > cfg.thresholds.latency) { newReEsc++; newLatency = 0; }
+    } else { newLatency = 0; }
+  } else { newLatency = 0; }
 
-  return {
-    ...dept,
-    reality: newReality,
-    kpi: newKpi,
-    gaming: newGaming,
-    shadowMetric: newShadow,
-    latency: newLatency,
-    reEscalations: newReEsc
-  };
+  return { ...dept, reality: newReality, kpi: newKpi, gaming: newGaming, shadowMetric: newShadow, latency: newLatency, reEscalations: newReEsc };
 }
 
-function computeMode(depts, cfg) {
-  const avgDiv =
-    depts.reduce((s, d) => s + Math.abs(d.kpi - d.shadowMetric), 0) /
-    depts.length;
-
+function computeMode(depts, cfg, prevMode) {
+  if (prevMode === "Cooldown" || prevMode === "Recovery") return prevMode;
+  const avgDiv = depts.reduce((s, d) => s + Math.abs(d.kpi - d.shadowMetric), 0) / depts.length;
   const maxReEsc = Math.max(...depts.map(d => d.reEscalations));
-
-  if (avgDiv >= cfg.thresholds.crisis || maxReEsc >= cfg.thresholds.reEscalation)
-    return "Crisis";
-
-  if (avgDiv >= cfg.thresholds.tension)
-    return "Tension";
-
+  if (avgDiv >= cfg.thresholds.crisis || maxReEsc >= cfg.thresholds.reEscalation) return "Crisis";
+  if (avgDiv >= cfg.thresholds.tension) return "Tension";
   return "Normal";
 }
 
 function computeOrgHealth(depts) {
-  const avgDiv =
-    depts.reduce((s, d) => s + Math.abs(d.kpi - d.reality), 0) / depts.length;
+  const avgDiv = depts.reduce((s, d) => s + Math.abs(d.kpi - d.reality), 0) / depts.length;
   const avgGaming = depts.reduce((s, d) => s + d.gaming, 0) / depts.length;
   return clamp(1 - avgDiv * 0.9 - avgGaming * 0.3, 0, 1);
+}
+
+function applyRecoveryToDepts(depts) {
+  return depts.map(d => ({ ...d, gaming: d.gaming * 0.5, reEscalations: 0, latency: 0 }));
 }
 
 function runTick(state, cfg) {
   if (state.tick >= cfg.ticks) return state;
 
-  if (state.forceResetToNormal) {
-    return {
-      ...state,
-      mode: "Normal",
-      forceResetToNormal: false,
-      history: {
-        ...state.history,
-        interventions: [...state.history.interventions, state.tick],
-        mode: [...state.history.mode, 0.2]
-      },
-      tick: state.tick + 1
-    };
+  const shock = state.shockActive;
+  let currentMode = state.mode;
+  let crisisDayCount = state.crisisDayCount || 0;
+  let cooldownRemaining = state.cooldownRemaining || 0;
+  let crisisEventCount = state.crisisEventCount || 0;
+  let pendingIntervention = state.pendingIntervention || false;
+  let interventionDelayRemaining = state.interventionDelayRemaining || 0;
+  let shadowNoise = state.shadowNoise !== undefined ? state.shadowNoise : cfg.shadowNoise;
+  let interventionMarkers = [...(state.history.interventionMarkers || [])];
+  let recoveryTriggeredThisTick = false;
+
+  if (pendingIntervention && interventionDelayRemaining > 0) {
+    interventionDelayRemaining--;
+    if (interventionDelayRemaining === 0) { pendingIntervention = false; recoveryTriggeredThisTick = true; }
   }
 
-  const shock = state.shockActive;
+  if (currentMode === "Crisis") {
+    crisisDayCount++;
+    if (crisisDayCount >= (cfg.autoCrisisDaysForRecovery || 30)) { recoveryTriggeredThisTick = true; crisisDayCount = 0; }
+  } else if (currentMode !== "Recovery" && currentMode !== "Cooldown") {
+    crisisDayCount = 0;
+  }
 
-  const newBaseline = state.baselineDepts.map(d =>
-    stepBaselineDept(d, cfg, shock)
-  );
-  const newAino = state.ainoDepts.map(d =>
-    stepAinoDept(d, cfg, shock, state.mode)
-  );
+  let newBaseline = state.baselineDepts.map(d => stepBaselineDept(d, cfg, shock));
+  let newAino = state.ainoDepts;
 
-  const newMode = computeMode(newAino, cfg);
+  if (recoveryTriggeredThisTick) {
+    currentMode = "Recovery";
+    newAino = applyRecoveryToDepts(state.ainoDepts);
+    shadowNoise = shadowNoise * 0.8;
+    crisisDayCount = 0;
+    cooldownRemaining = 0;
+    interventionMarkers = [...interventionMarkers, state.tick];
+    newAino = newAino.map(d => stepAinoDept(d, cfg, shock, "Recovery"));
+  } else if (currentMode === "Recovery") {
+    currentMode = "Cooldown";
+    cooldownRemaining = cfg.cooldownDays || 15;
+    newAino = state.ainoDepts.map(d => stepAinoDept(d, cfg, shock, "Cooldown"));
+  } else if (currentMode === "Cooldown") {
+    cooldownRemaining--;
+    newAino = state.ainoDepts.map(d => stepAinoDept(d, cfg, shock, "Cooldown"));
+    if (cooldownRemaining <= 0) { currentMode = "Normal"; cooldownRemaining = 0; }
+  } else {
+    newAino = state.ainoDepts.map(d => stepAinoDept(d, cfg, shock, currentMode));
+  }
 
-  const crisisCount =
-    newMode === "Crisis"
-      ? state.crisisCount + 1
-      : state.crisisCount;
+  let newMode = currentMode;
+  if (currentMode !== "Recovery" && currentMode !== "Cooldown") {
+    newMode = computeMode(newAino, cfg, currentMode);
+    if (newMode === "Crisis" && currentMode !== "Crisis") crisisEventCount++;
+  }
 
   const maxReEsc = Math.max(...newAino.map(d => d.reEscalations));
-  const riskDelta =
-    newMode === "Crisis" ? 0.01 :
-    newMode === "Tension" ? 0.005 :
-    -0.003;
-
-  const newCapture = clamp(
-    state.captureRisk + riskDelta + maxReEsc * 0.001,
-    0,
-    1
-  );
+  const riskDelta = newMode === "Crisis" ? 0.01 : newMode === "Tension" ? 0.005 : newMode === "Cooldown" ? -0.005 : newMode === "Recovery" ? -0.008 : -0.003;
+  const newCapture = clamp(state.captureRisk + riskDelta + maxReEsc * 0.001, 0, 1);
 
   const bh = computeOrgHealth(newBaseline);
   const ah = computeOrgHealth(newAino);
-  const div =
-    newAino.reduce((s, d) => s + Math.abs(d.kpi - d.shadowMetric), 0) /
-    newAino.length;
-
-  const modeIntensity =
-    newMode === "Normal" ? 0.2 :
-    newMode === "Tension" ? 0.6 : 1.0;
+  const div = newAino.reduce((s, d) => s + Math.abs(d.kpi - d.shadowMetric), 0) / newAino.length;
+  const modeIntensity = newMode === "Normal" ? 0.2 : newMode === "Tension" ? 0.6 : newMode === "Crisis" ? 1.0 : newMode === "Recovery" ? 0.4 : 0.3;
 
   return {
     ...state,
@@ -147,24 +143,26 @@ function runTick(state, cfg) {
     baselineDepts: newBaseline,
     ainoDepts: newAino,
     mode: newMode,
-    crisisCount,
     captureRisk: newCapture,
+    crisisDayCount,
+    cooldownRemaining,
+    crisisEventCount,
+    pendingIntervention,
+    interventionDelayRemaining,
+    shadowNoise,
     history: {
       baseHealth: [...state.history.baseHealth, bh],
       ainoHealth: [...state.history.ainoHealth, ah],
       divergence: [...state.history.divergence, div],
       mode: [...state.history.mode, modeIntensity],
-      interventions: [...state.history.interventions]
+      interventionMarkers
     }
   };
 }
 
-// worker loop
 onmessage = function (e) {
   const { state, cfg, steps } = e.data;
   let s = state;
-  for (let i = 0; i < steps; i++) {
-    s = runTick(s, cfg);
-  }
+  for (let i = 0; i < steps; i++) { s = runTick(s, cfg); }
   postMessage(s);
 };
