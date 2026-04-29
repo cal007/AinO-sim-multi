@@ -37,7 +37,7 @@ export function initDept(name) {
 
 // --- Baseline step ---
 export function stepBaselineDept(dept, cfg, shock) {
-  const realityDrift = rand(-0.03, 0.03) + (shock ? rand(-0.08, 0) : 0);
+  const realityDrift = rand(-0.03, 0.03) + (shock ? rand(-0.15, -0.05) : 0);
   const newReality = clamp(dept.reality + realityDrift, 0, 1);
 
   const gamingPressure = 0.015 + dept.gaming * 0.01;
@@ -50,11 +50,20 @@ export function stepBaselineDept(dept, cfg, shock) {
 
 // --- AïnO step ---
 export function stepAinoDept(dept, cfg, shock, mode) {
-  const realityDrift = rand(-0.03, 0.03) + (shock ? rand(-0.08, 0) : 0);
+  const realityDrift = rand(-0.03, 0.03) + (shock ? rand(-0.15, -0.05) : 0);
   const newReality = clamp(dept.reality + realityDrift, 0, 1);
 
-  const shadowNoise = rand(-cfg.shadowNoise, cfg.shadowNoise);
-  const newShadow = clamp(newReality + shadowNoise, 0, 1);
+  // KEY FIX: During shock, shadow does NOT immediately follow reality.
+  // Shadow stays near its previous value (with small noise only),
+  // while reality drops sharply -> creates real divergence spike.
+  let newShadow;
+  if (shock) {
+    // Shadow lags: stays near previous value with tiny noise
+    newShadow = clamp(dept.shadowMetric + rand(-0.01, 0.01), 0, 1);
+  } else {
+    const shadowNoise = rand(-cfg.shadowNoise, cfg.shadowNoise);
+    newShadow = clamp(newReality + shadowNoise, 0, 1);
+  }
 
   // Cooldown mode: reduce gaming, reduce noise, prevent escalation, rebuild trust
   if (mode === "Cooldown") {
@@ -113,7 +122,7 @@ export function stepAinoDept(dept, cfg, shock, mode) {
 }
 
 // --- Mode logic ---
-export function computeMode(depts, cfg, prevMode, cooldownRemaining) {
+export function computeMode(depts, cfg, prevMode) {
   // Cooldown and Recovery are managed externally
   if (prevMode === "Cooldown" || prevMode === "Recovery") return prevMode;
 
@@ -168,7 +177,7 @@ export function createInitialState() {
       ainoHealth: [],
       divergence: [],
       mode: [],
-      interventionMarkers: []  // list of tick indices where intervention occurred
+      interventionMarkers: []
     },
     shadowNoise: DEFAULT_CONFIG.shadowNoise
   };
@@ -198,7 +207,7 @@ export function runTick(state, cfg) {
     }
   }
 
-  // Auto-recovery: if in Crisis for 30 days
+  // Auto-recovery: if in Crisis for N days
   if (currentMode === "Crisis") {
     crisisDayCount++;
     if (crisisDayCount >= cfg.autoCrisisDaysForRecovery) {
@@ -220,7 +229,6 @@ export function runTick(state, cfg) {
     crisisDayCount = 0;
     cooldownRemaining = 0;
     interventionMarkers = [...interventionMarkers, state.tick];
-    // Step depts in recovery mode
     newAino = newAino.map(d => stepAinoDept(d, cfg, shock, "Recovery"));
   } else if (currentMode === "Recovery") {
     // Recovery lasts 1 tick then transitions to Cooldown
@@ -241,7 +249,7 @@ export function runTick(state, cfg) {
   // Compute new mode (only if not in special modes)
   let newMode = currentMode;
   if (currentMode !== "Recovery" && currentMode !== "Cooldown") {
-    newMode = computeMode(newAino, cfg, currentMode, cooldownRemaining);
+    newMode = computeMode(newAino, cfg, currentMode);
     // Track crisis events: entering crisis
     if (newMode === "Crisis" && currentMode !== "Crisis") {
       crisisEventCount++;
