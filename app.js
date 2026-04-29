@@ -6,30 +6,54 @@ import {
 
 const { useState, useEffect, useRef, useCallback } = React;
 
-// --- MiniChart with intervention markers ---
-function MiniChart({ data, color, label, height = 60, interventionMarkers = [], totalTicks = 1 }) {
+// --- MiniChart: vertical lines move WITH the data (viewBox scales to data length) ---
+function MiniChart({ data, color, label, height = 60, interventionMarkers = [], recoveryHealthMarkers = [], showRecoveryDots = false }) {
     if (!data || data.length < 2) return null;
+    const n = data.length;
     const w = 260, h = height;
+
+    // Points scaled to actual data length (not totalTicks) — lines always align
     const pts = data
-        .map((v, i) => `${(i / (data.length - 1)) * w},${h - v * h}`)
+        .map((v, i) => `${(i / (n - 1)) * w},${h - v * h}`)
         .join(" ");
 
     return (
         <div className="mb-1">
             <div className="text-xs text-gray-400 mb-0.5">{label}</div>
-            <svg width={w} height={h} className="bg-gray-900 rounded" style={{overflow:'visible'}}>
+            <svg
+                viewBox={`0 0 ${w} ${h}`}
+                width={w}
+                height={h}
+                className="bg-gray-900 rounded"
+                style={{ overflow: 'visible', display: 'block' }}
+            >
                 <polyline points={pts} fill="none" stroke={color} strokeWidth="1.5" />
+
+                {/* Intervention / auto-recovery vertical lines */}
                 {interventionMarkers.map((tick, i) => {
-                    const x = (tick / Math.max(totalTicks - 1, 1)) * w;
+                    const x = n > 1 ? (tick / (n - 1)) * w : 0;
                     return (
                         <line
-                            key={i}
+                            key={`iv-${i}`}
                             x1={x} y1={0} x2={x} y2={h}
                             stroke="#ef4444"
                             strokeWidth="1.5"
                             strokeDasharray="3,2"
                             opacity="0.85"
                         />
+                    );
+                })}
+
+                {/* Recovery health dots on health charts */}
+                {showRecoveryDots && recoveryHealthMarkers.map((m, i) => {
+                    const x = n > 1 ? (m.tick / (n - 1)) * w : 0;
+                    const yBase = h - m.baseHealth * h;
+                    const yAino = h - m.ainoHealth * h;
+                    return (
+                        <g key={`rh-${i}`}>
+                            <circle cx={x} cy={yBase} r="4" fill="#f59e0b" stroke="#fff" strokeWidth="1" opacity="0.9" />
+                            <circle cx={x} cy={yAino} r="4" fill="#a78bfa" stroke="#fff" strokeWidth="1" opacity="0.9" />
+                        </g>
                     );
                 })}
             </svg>
@@ -48,7 +72,6 @@ function App() {
     const intervalRef = useRef(null);
     const workerRef = useRef(null);
 
-    // Reset
     const reset = useCallback(() => {
         setRunning(false);
         setFinished(false);
@@ -56,7 +79,6 @@ function App() {
         setState(createInitialState());
     }, []);
 
-    // Shock — now sets shockDaysRemaining from cfg.shockDurationDays
     const triggerShock = useCallback(() => {
         setState(s => ({
             ...s,
@@ -65,7 +87,6 @@ function App() {
         }));
     }, [cfg.shockDurationDays]);
 
-    // Manual Intervention (3-day delay) — only allowed in Tension or Crisis
     const triggerIntervention = useCallback(() => {
         setState(s => ({
             ...s,
@@ -74,7 +95,6 @@ function App() {
         }));
     }, []);
 
-    // Worker setup
     useEffect(() => {
         if (!useWorker) return;
         if (!workerRef.current) {
@@ -85,7 +105,6 @@ function App() {
         return () => { worker.terminate(); workerRef.current = null; };
     }, [useWorker]);
 
-    // Tick loop (no worker)
     useEffect(() => {
         if (!running || useWorker) return;
         intervalRef.current = setInterval(() => {
@@ -102,7 +121,6 @@ function App() {
         return () => clearInterval(intervalRef.current);
     }, [running, cfg, useWorker]);
 
-    // Tick loop (worker)
     useEffect(() => {
         if (!running || !useWorker || !workerRef.current) return;
         const worker = workerRef.current;
@@ -132,12 +150,13 @@ function App() {
         "#ef4444";
 
     const markers = state.history.interventionMarkers || [];
-    const totalTicks = cfg.ticks;
+    const recoveryMarkers = state.history.recoveryHealthMarkers || [];
 
-    // Intervention button: only enabled in Tension or Crisis
     const canIntervene = running
         && !state.pendingIntervention
         && (state.mode === "Tension" || state.mode === "Crisis");
+
+    const shockLabel = { 1: "Low", 2: "Mid", 3: "High" };
 
     return (
         <div className="min-h-screen p-4 font-mono text-sm">
@@ -164,12 +183,32 @@ function App() {
                 ↺ Reset
             </button>
 
+            {/* Shock intensity selector */}
+            <div className="flex items-center gap-1 text-xs">
+                <span className="text-gray-400">Shock:</span>
+                {[1, 2, 3].map(lvl => (
+                    <button
+                        key={lvl}
+                        onClick={() => setCfg(c => ({ ...c, shockIntensity: lvl }))}
+                        className={`px-2 py-1 rounded font-bold border ${
+                            cfg.shockIntensity === lvl
+                                ? lvl === 1 ? "bg-yellow-700 border-yellow-500 text-white"
+                                : lvl === 2 ? "bg-orange-700 border-orange-500 text-white"
+                                : "bg-red-800 border-red-500 text-white"
+                                : "bg-gray-800 border-gray-600 text-gray-400"
+                        }`}
+                    >
+                        {lvl} {shockLabel[lvl]}
+                    </button>
+                ))}
+            </div>
+
             <button
                 onClick={triggerShock}
                 disabled={!running}
                 className="px-4 py-1.5 rounded text-xs font-bold bg-red-800 hover:bg-red-700 disabled:opacity-40"
             >
-                ⚡ Political Shock
+                ⚡ Shock
             </button>
 
             <button
@@ -181,13 +220,13 @@ function App() {
                 🛠 Intervention
             </button>
 
-            <label className="flex items-center gap-1 text-xs text-gray-400 ml-4">
+            <label className="flex items-center gap-1 text-xs text-gray-400 ml-2">
                 <input
                     type="checkbox"
                     checked={useWorker}
                     onChange={e => setUseWorker(e.target.checked)}
                 />
-                Use WebWorker
+                WebWorker
             </label>
 
             <div className="flex items-center gap-2 ml-auto">
@@ -212,22 +251,22 @@ function App() {
 
             {state.shockActive && (
                 <span className="text-red-400 text-xs animate-pulse">
-                    ⚡ SHOCK ACTIVE ({state.shockDaysRemaining} day(s) left)
+                    ⚡ SHOCK L{cfg.shockIntensity} ({state.shockDaysRemaining}d left)
                 </span>
             )}
             {state.pendingIntervention && (
                 <span className="text-purple-400 text-xs animate-pulse">
-                    🛠 Intervention in {state.interventionDelayRemaining} day(s)…
+                    🛠 Intervention in {state.interventionDelayRemaining}d…
                 </span>
             )}
             {state.mode === "Cooldown" && state.cooldownRemaining > 0 && (
                 <span className="text-blue-400 text-xs">
-                    ❄ Cooldown: {state.cooldownRemaining} day(s) left
+                    ❄ Cooldown: {state.cooldownRemaining}d left
                 </span>
             )}
             {state.graceRemaining > 0 && (
                 <span className="text-green-400 text-xs">
-                    🛡 Grace: {state.graceRemaining} day(s) (Crisis blocked)
+                    🛡 Grace: {state.graceRemaining}d (Crisis blocked)
                 </span>
             )}
             {state.mode === "Crisis" && (
@@ -236,13 +275,11 @@ function App() {
                 </span>
             )}
             {(state.mode === "Tension" || state.mode === "Crisis") && !state.pendingIntervention && (
-                <span className="text-purple-300 text-xs">
-                    ← Intervention available
-                </span>
+                <span className="text-purple-300 text-xs">← Intervention available</span>
             )}
 
             <span className="ml-auto text-xs text-gray-500">
-                Shadow Capture Risk:{" "}
+                Capture Risk:{" "}
                 <span className={state.captureRisk > 0.5 ? "text-red-400" : "text-green-400"}>
                     {(state.captureRisk * 100).toFixed(0)}%
                 </span>
@@ -251,94 +288,68 @@ function App() {
 
         {/* Parameter sliders */}
         <div className="mb-4 grid grid-cols-3 gap-4 text-xs bg-gray-900 p-3 rounded border border-gray-800">
-            {/* Simulation */}
             <div>
                 <div className="font-bold text-gray-300 mb-1">Simulation</div>
-                <label className="block mb-1">
-                    Days: {cfg.ticks}
+                <label className="block mb-1">Days: {cfg.ticks}
                     <input type="range" min="60" max="720" step="30" value={cfg.ticks}
-                        onChange={e => setCfg(c => ({ ...c, ticks: Number(e.target.value) }))}
-                        className="w-full" />
+                        onChange={e => setCfg(c => ({ ...c, ticks: Number(e.target.value) }))} className="w-full" />
                 </label>
-                <label className="block mb-1">
-                    Shock Duration (days): {cfg.shockDurationDays}
+                <label className="block mb-1">Shock Duration (days): {cfg.shockDurationDays}
                     <input type="range" min="1" max="30" step="1" value={cfg.shockDurationDays}
-                        onChange={e => setCfg(c => ({ ...c, shockDurationDays: Number(e.target.value) }))}
-                        className="w-full" />
+                        onChange={e => setCfg(c => ({ ...c, shockDurationDays: Number(e.target.value) }))} className="w-full" />
                 </label>
-                <label className="block mb-1">
-                    Gaming Rate: {cfg.gamingRate.toFixed(3)}
+                <label className="block mb-1">Gaming Rate: {cfg.gamingRate.toFixed(3)}
                     <input type="range" min="0.005" max="0.05" step="0.005" value={cfg.gamingRate}
-                        onChange={e => setCfg(c => ({ ...c, gamingRate: Number(e.target.value) }))}
-                        className="w-full" />
+                        onChange={e => setCfg(c => ({ ...c, gamingRate: Number(e.target.value) }))} className="w-full" />
                 </label>
-                <label className="block mb-1">
-                    Shadow Noise: {cfg.shadowNoise.toFixed(3)}
+                <label className="block mb-1">Shadow Noise: {cfg.shadowNoise.toFixed(3)}
                     <input type="range" min="0.005" max="0.05" step="0.005" value={cfg.shadowNoise}
-                        onChange={e => setCfg(c => ({ ...c, shadowNoise: Number(e.target.value) }))}
-                        className="w-full" />
+                        onChange={e => setCfg(c => ({ ...c, shadowNoise: Number(e.target.value) }))} className="w-full" />
                 </label>
-                <label className="block mb-1">
-                    Auto-Recovery after Crisis (days): {cfg.autoCrisisDaysForRecovery}
+                <label className="block mb-1">Auto-Recovery after Crisis (days): {cfg.autoCrisisDaysForRecovery}
                     <input type="range" min="5" max="60" step="5" value={cfg.autoCrisisDaysForRecovery}
-                        onChange={e => setCfg(c => ({ ...c, autoCrisisDaysForRecovery: Number(e.target.value) }))}
-                        className="w-full" />
+                        onChange={e => setCfg(c => ({ ...c, autoCrisisDaysForRecovery: Number(e.target.value) }))} className="w-full" />
                 </label>
-                <label className="block mb-1">
-                    Cooldown Duration (days): {cfg.cooldownDays}
+                <label className="block mb-1">Cooldown Duration (days): {cfg.cooldownDays}
                     <input type="range" min="5" max="30" step="5" value={cfg.cooldownDays}
-                        onChange={e => setCfg(c => ({ ...c, cooldownDays: Number(e.target.value) }))}
-                        className="w-full" />
+                        onChange={e => setCfg(c => ({ ...c, cooldownDays: Number(e.target.value) }))} className="w-full" />
                 </label>
             </div>
 
-            {/* Thresholds */}
             <div>
                 <div className="font-bold text-gray-300 mb-1">Thresholds</div>
-                <label className="block mb-1">
-                    Tension Divergence: {cfg.thresholds.tension.toFixed(2)}
+                <label className="block mb-1">Tension Divergence: {cfg.thresholds.tension.toFixed(2)}
                     <input type="range" min="0.1" max="0.5" step="0.05" value={cfg.thresholds.tension}
-                        onChange={e => setCfg(c => ({ ...c, thresholds: { ...c.thresholds, tension: Number(e.target.value) } }))}
-                        className="w-full" />
+                        onChange={e => setCfg(c => ({ ...c, thresholds: { ...c.thresholds, tension: Number(e.target.value) } }))} className="w-full" />
                 </label>
-                <label className="block mb-1">
-                    Crisis Divergence: {cfg.thresholds.crisis.toFixed(2)}
+                <label className="block mb-1">Crisis Divergence: {cfg.thresholds.crisis.toFixed(2)}
                     <input type="range" min="0.3" max="0.8" step="0.05" value={cfg.thresholds.crisis}
-                        onChange={e => setCfg(c => ({ ...c, thresholds: { ...c.thresholds, crisis: Number(e.target.value) } }))}
-                        className="w-full" />
+                        onChange={e => setCfg(c => ({ ...c, thresholds: { ...c.thresholds, crisis: Number(e.target.value) } }))} className="w-full" />
                 </label>
             </div>
 
-            {/* Mode decay */}
             <div>
                 <div className="font-bold text-gray-300 mb-1">Mode Decay</div>
-                <label className="block mb-1">
-                    Decay Normal: {cfg.gamingDecay.Normal.toFixed(3)}
+                <label className="block mb-1">Decay Normal: {cfg.gamingDecay.Normal.toFixed(3)}
                     <input type="range" min="0.0" max="0.05" step="0.005" value={cfg.gamingDecay.Normal}
-                        onChange={e => setCfg(c => ({ ...c, gamingDecay: { ...c.gamingDecay, Normal: Number(e.target.value) } }))}
-                        className="w-full" />
+                        onChange={e => setCfg(c => ({ ...c, gamingDecay: { ...c.gamingDecay, Normal: Number(e.target.value) } }))} className="w-full" />
                 </label>
-                <label className="block mb-1">
-                    Decay Tension: {cfg.gamingDecay.Tension.toFixed(3)}
+                <label className="block mb-1">Decay Tension: {cfg.gamingDecay.Tension.toFixed(3)}
                     <input type="range" min="0.0" max="0.05" step="0.005" value={cfg.gamingDecay.Tension}
-                        onChange={e => setCfg(c => ({ ...c, gamingDecay: { ...c.gamingDecay, Tension: Number(e.target.value) } }))}
-                        className="w-full" />
+                        onChange={e => setCfg(c => ({ ...c, gamingDecay: { ...c.gamingDecay, Tension: Number(e.target.value) } }))} className="w-full" />
                 </label>
-                <label className="block mb-1">
-                    Decay Crisis: {cfg.gamingDecay.Crisis.toFixed(3)}
+                <label className="block mb-1">Decay Crisis: {cfg.gamingDecay.Crisis.toFixed(3)}
                     <input type="range" min="0.0" max="0.05" step="0.005" value={cfg.gamingDecay.Crisis}
-                        onChange={e => setCfg(c => ({ ...c, gamingDecay: { ...c.gamingDecay, Crisis: Number(e.target.value) } }))}
-                        className="w-full" />
+                        onChange={e => setCfg(c => ({ ...c, gamingDecay: { ...c.gamingDecay, Crisis: Number(e.target.value) } }))} className="w-full" />
                 </label>
             </div>
         </div>
 
         {/* Two orgs */}
         <div className="grid grid-cols-2 gap-4 mb-4">
-            {/* Baseline */}
             <div className="bg-gray-900 rounded p-3 border border-gray-800">
                 <div className="text-xs font-bold text-gray-300 mb-1">
-                    📊 Baseline (KPI-only, self-correcting)
+                    📊 Baseline (KPI-only)
                     {state.baselineMode === "Cooldown" && (
                         <span className="ml-2 text-blue-400 font-normal">❄ Cooldown ({state.baselineCooldownRemaining}d)</span>
                     )}
@@ -364,11 +375,9 @@ function App() {
                     <span className="font-bold" style={{ color: `hsl(${avgBaseHealth * 120},70%,55%)` }}>
                         {(avgBaseHealth * 100).toFixed(0)}%
                     </span>
-                    <span className="text-gray-600 ml-2">(shared reality with AïnO)</span>
                 </div>
             </div>
 
-            {/* AïnO */}
             <div className="bg-gray-900 rounded p-3 border border-gray-800">
                 <div className="text-xs font-bold text-gray-300 mb-1">
                     🔷 AïnO (Shadow + Mode)
@@ -405,21 +414,23 @@ function App() {
         <div className="grid grid-cols-2 gap-4 mb-4">
             <div className="bg-gray-900 rounded p-3 border border-gray-800">
                 <div className="text-xs text-gray-500 mb-1">
-                    🔴 Red dashed lines = interventions/auto-recovery
+                    🔴 Red lines = interventions/auto-recovery &nbsp;|&nbsp; 🟡🟣 Dots = org health at recovery start
                 </div>
                 <MiniChart
                     data={state.history.baseHealth}
                     color="#f59e0b"
-                    label="Baseline Org Health (same reality as AïnO)"
+                    label="Baseline Org Health"
                     interventionMarkers={markers}
-                    totalTicks={totalTicks}
+                    recoveryHealthMarkers={recoveryMarkers}
+                    showRecoveryDots={true}
                 />
                 <MiniChart
                     data={state.history.ainoHealth}
                     color="#a78bfa"
                     label="AïnO Org Health"
                     interventionMarkers={markers}
-                    totalTicks={totalTicks}
+                    recoveryHealthMarkers={recoveryMarkers}
+                    showRecoveryDots={true}
                 />
             </div>
 
@@ -429,14 +440,12 @@ function App() {
                     color="#f87171"
                     label="AïnO KPI–Shadow Divergence"
                     interventionMarkers={markers}
-                    totalTicks={totalTicks}
                 />
                 <MiniChart
                     data={state.history.mode}
                     color="#34d399"
                     label="Mode Intensity (0.2=Normal 0.35=Cooldown 0.6=Tension 1=Crisis)"
                     interventionMarkers={markers}
-                    totalTicks={totalTicks}
                 />
             </div>
         </div>
@@ -449,17 +458,14 @@ function App() {
                     <div>
                         <div className="text-gray-400 mb-1">Baseline final health</div>
                         <div className="text-2xl font-bold text-yellow-400">{(avgBaseHealth * 100).toFixed(0)}%</div>
-                        <div className="text-gray-600 text-xs mt-0.5">KPI-only, self-correcting</div>
                     </div>
                     <div>
                         <div className="text-gray-400 mb-1">AïnO final health</div>
                         <div className="text-2xl font-bold text-purple-400">{(avgAinoHealth * 100).toFixed(0)}%</div>
-                        <div className="text-gray-600 text-xs mt-0.5">Shadow intelligence + mode</div>
                     </div>
                     <div>
                         <div className="text-gray-400 mb-1">Shadow capture risk</div>
                         <div className="text-2xl font-bold text-red-400">{(state.captureRisk * 100).toFixed(0)}%</div>
-                        <div className="text-gray-600 text-xs mt-0.5">Decays in Normal/Cooldown</div>
                     </div>
                 </div>
                 <div className="grid grid-cols-2 gap-4 text-xs mb-3">
@@ -471,16 +477,35 @@ function App() {
                         <div className="text-gray-400 mb-1">Interventions / auto-recoveries</div>
                         <div className="text-xl font-bold text-purple-400">{markers.length}</div>
                         {markers.length > 0 && (
-                            <div className="text-gray-500 mt-0.5">
-                                Days: {markers.join(", ")}
-                            </div>
+                            <div className="text-gray-500 mt-0.5">Days: {markers.join(", ")}</div>
                         )}
                     </div>
                 </div>
+                {recoveryMarkers.length > 0 && (
+                    <div className="text-xs mb-3">
+                        <div className="text-gray-400 mb-1">Org health at each recovery start:</div>
+                        <table className="text-xs border-collapse">
+                            <thead>
+                                <tr>
+                                    <th className="text-gray-500 pr-4 text-left">Day</th>
+                                    <th className="text-yellow-400 pr-4 text-left">Baseline</th>
+                                    <th className="text-purple-400 text-left">AïnO</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {recoveryMarkers.map((m, i) => (
+                                    <tr key={i}>
+                                        <td className="text-gray-400 pr-4">{m.tick}</td>
+                                        <td className="text-yellow-400 pr-4">{(m.baseHealth * 100).toFixed(0)}%</td>
+                                        <td className="text-purple-400">{(m.ainoHealth * 100).toFixed(0)}%</td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                )}
                 <div className="text-xs text-gray-400">
-                    Both orgs run on the <strong>same shared reality</strong> — health differences reflect governance quality only.
-                    AïnO recovers faster and more precisely than Baseline after each intervention.
-                    Capture risk decays during Normal/Cooldown and spikes during Crisis.
+                    Both orgs share the same reality. Health differences reflect governance quality only.
                 </div>
             </div>
         )}
