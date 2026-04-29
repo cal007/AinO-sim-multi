@@ -1,0 +1,12 @@
+name: Test with Abacus AI
+on: [push]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
+      - run: pip install -r requirements.txt
+      - run: python src/update_agent.py
+        env:
+          ABACUS_API_KEY: ${{ secrets.ABACUS_API_KEY }}   
