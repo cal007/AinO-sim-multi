@@ -6,36 +6,6 @@ import {
 
 const { useState, useEffect, useRef, useCallback } = React;
 
-function App() {
-
-  const [state, setState] = useState(() => ({
-    tick: 0,
-    mode: "Normal",
-    crisisCount: 0,
-    captureRisk: 0,
-    shockActive: false,
-    forceResetToNormal: false,
-
-    // REAL initialization
-    ...createInitialState(),
-
-    history: {
-      baseHealth: [],
-      ainoHealth: [],
-      divergence: [],
-      mode: [],
-      interventions: []
-    }
-  }));
-
-  // Hierarchy Intervention
-  const triggerHierarchyIntervention = () => {
-    setState(prev => ({
-      ...prev,
-      forceResetToNormal: true
-    }));
-  };
-
 // --- MiniChart (pure SVG) ---
 function MiniChart({ data, color, label, markers = [] }) {
   const max = Math.max(...data, 1);
@@ -86,6 +56,11 @@ function App() {
         setFinished(false);
         clearInterval(intervalRef.current);
         setState(createInitialState());
+    }, []);
+
+    // Hierarchy Intervention
+    const triggerHierarchyIntervention = useCallback(() => {
+        setState(prev => ({ ...prev, forceResetToNormal: true }));
     }, []);
 
     // Shock
@@ -550,7 +525,7 @@ function App() {
         <MiniChart
         data={state.history.mode}
         color="#f97316"
-        label="Mode Intensity"
+        label="Mode Intensity (with interventions)"
         markers={state.history.interventions}
         />
 
@@ -591,8 +566,6 @@ function App() {
             <p>Crisis events: {state.crisisCount}</p>
             </div>
             </div>
-
-            <p>Crisis events: {state.crisisCount}</p>
 
             <div className="mt-3 text-xs text-gray-400">
             Interpretation: compare Baseline vs AïnO health and capture risk.
