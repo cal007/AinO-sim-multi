@@ -8,6 +8,67 @@ export function rand(lo, hi) {
   return lo + Math.random() * (hi - lo);
 }
 
+export const DEFAULT_CONFIG = {
+  ticks: 120,
+  gamingRate: 0.02,
+  shadowNoise: 0.02,
+  shockDurationMs: 1800,
+  thresholds: {
+    tension: 0.25,
+    crisis: 0.45,
+    latency: 3,
+    reEscalation: 3
+  },
+  gamingDecay: {
+    Normal: 0.0,
+    Tension: 0.01,
+    Crisis: 0.02
+  }
+};
+
+function createDept(name) {
+  const reality = rand(0.55, 0.8);
+  const kpi = clamp(reality + rand(0.02, 0.08), 0, 1);
+  const gaming = rand(0.03, 0.12);
+  return { name, reality, kpi, gaming };
+}
+
+export function createInitialState() {
+  const names = ["Finance", "Operations", "Compliance", "R&D"];
+
+  const baselineDepts = names.map(createDept);
+  const ainoDepts = names.map((name) => {
+    const dept = createDept(name);
+    return {
+      ...dept,
+      shadowMetric: clamp(dept.reality + rand(-0.01, 0.01), 0, 1),
+      latency: 0,
+      reEscalations: 0
+    };
+  });
+
+  return {
+    tick: 0,
+    mode: "Normal",
+    shockActive: false,
+    forceResetToNormal: false,
+    crisisCount: 0,
+    captureRisk: 0.12,
+    baselineDepts,
+    ainoDepts,
+    history: {
+      baseHealth: [computeOrgHealth(baselineDepts)],
+      ainoHealth: [computeOrgHealth(ainoDepts)],
+      divergence: [
+        ainoDepts.reduce((s, d) => s + Math.abs(d.kpi - d.shadowMetric), 0) /
+          ainoDepts.length
+      ],
+      mode: [0.2],
+      interventions: []
+    }
+  };
+}
+
 export function stepBaselineDept(dept, cfg, shock) {
   const realityDrift = rand(-0.03, 0.03) + (shock ? rand(-0.08, 0) : 0);
   const newReality = clamp(dept.reality + realityDrift, 0, 1);
