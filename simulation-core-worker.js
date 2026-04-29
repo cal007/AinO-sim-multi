@@ -9,7 +9,7 @@ function initDept(name) {
 }
 
 function stepBaselineDept(dept, cfg, shock) {
-  const realityDrift = rand(-0.03, 0.03) + (shock ? rand(-0.08, 0) : 0);
+  const realityDrift = rand(-0.03, 0.03) + (shock ? rand(-0.15, -0.05) : 0);
   const newReality = clamp(dept.reality + realityDrift, 0, 1);
   const gamingPressure = 0.015 + dept.gaming * 0.01;
   const newKpi = clamp(dept.kpi + gamingPressure + rand(-0.01, 0.01), 0, 1);
@@ -18,10 +18,17 @@ function stepBaselineDept(dept, cfg, shock) {
 }
 
 function stepAinoDept(dept, cfg, shock, mode) {
-  const realityDrift = rand(-0.03, 0.03) + (shock ? rand(-0.08, 0) : 0);
+  const realityDrift = rand(-0.03, 0.03) + (shock ? rand(-0.15, -0.05) : 0);
   const newReality = clamp(dept.reality + realityDrift, 0, 1);
-  const shadowNoise = rand(-cfg.shadowNoise, cfg.shadowNoise);
-  const newShadow = clamp(newReality + shadowNoise, 0, 1);
+
+  // KEY FIX: During shock, shadow lags - stays near previous value
+  let newShadow;
+  if (shock) {
+    newShadow = clamp(dept.shadowMetric + rand(-0.01, 0.01), 0, 1);
+  } else {
+    const shadowNoise = rand(-cfg.shadowNoise, cfg.shadowNoise);
+    newShadow = clamp(newReality + shadowNoise, 0, 1);
+  }
 
   if (mode === "Cooldown") {
     const newGaming = clamp(dept.gaming * 0.97, 0, 1);
