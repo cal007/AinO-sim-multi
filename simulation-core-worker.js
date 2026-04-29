@@ -1,7 +1,6 @@
-// simulation-core-worker.js — mirrors simulation-core.js exactly (no ES module exports)
+// simulation-core-worker.js
 
 const DEPT_NAMES = ["Sales", "Ops", "Finance", "Product"];
-
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 function rand(lo, hi) { return lo + Math.random() * (hi - lo); }
 
@@ -26,33 +25,23 @@ function stepAinoDept(dept, cfg, shock, mode) {
   if (shock) {
     newShadow = clamp(dept.shadowMetric + rand(-0.01, 0.01), 0, 1);
   } else if (mode === "Cooldown" || mode === "Recovery") {
-    const convergenceRate = 0.05;
-    newShadow = clamp(dept.shadowMetric + (newReality - dept.shadowMetric) * convergenceRate + rand(-0.005, 0.005), 0, 1);
+    newShadow = clamp(dept.shadowMetric + (newReality - dept.shadowMetric) * 0.15 + rand(-0.005, 0.005), 0, 1);
   } else {
     newShadow = clamp(newReality + rand(-cfg.shadowNoise, cfg.shadowNoise), 0, 1);
   }
 
   if (mode === "Cooldown") {
-    const newGaming = clamp(dept.gaming * 0.96, 0, 1);
-    const newKpi = clamp(dept.kpi + (newReality - dept.kpi) * 0.03 + rand(-0.005, 0.005), 0, 1);
-    return {
-      ...dept,
-      reality: newReality,
-      kpi: newKpi,
-      gaming: newGaming,
-      shadowMetric: newShadow,
-      latency: Math.max(0, dept.latency - 1),
-      reEscalations: Math.max(0, dept.reEscalations - 0.2)
-    };
+    const newKpi = clamp(dept.kpi + (newReality - dept.kpi) * 0.10 + rand(-0.005, 0.005), 0, 1);
+    const newGaming = clamp(dept.gaming * 0.94, 0, 1);
+    return { ...dept, reality: newReality, kpi: newKpi, gaming: newGaming, shadowMetric: newShadow, latency: 0, reEscalations: 0 };
   }
 
   if (mode === "Recovery") {
     const newGaming = clamp(dept.gaming * 0.90, 0, 1);
-    const newKpi = clamp(dept.kpi + rand(-0.005, 0.005), 0, 1);
     return {
       ...dept,
       reality: newReality,
-      kpi: newKpi,
+      kpi: clamp(newReality + rand(-0.05, 0.05), 0, 1),
       gaming: newGaming,
       shadowMetric: newShadow,
       latency: 0,
@@ -76,24 +65,13 @@ function stepAinoDept(dept, cfg, shock, mode) {
   let newReEsc = dept.reEscalations;
 
   if (divergence > cfg.thresholds.tension) {
-    if (newLatency > cfg.thresholds.latency) {
-      newReEsc = newReEsc + 1;
-      newLatency = 0;
-    }
+    if (newLatency > cfg.thresholds.latency) { newReEsc = newReEsc + 1; newLatency = 0; }
   } else {
     newLatency = Math.max(0, newLatency - 2);
     newReEsc = Math.max(0, newReEsc - 0.05);
   }
 
-  return {
-    ...dept,
-    reality: newReality,
-    kpi: newKpi,
-    gaming: newGaming,
-    shadowMetric: newShadow,
-    latency: newLatency,
-    reEscalations: newReEsc
-  };
+  return { ...dept, reality: newReality, kpi: newKpi, gaming: newGaming, shadowMetric: newShadow, latency: newLatency, reEscalations: newReEsc };
 }
 
 function computeMode(depts, cfg) {
@@ -111,7 +89,13 @@ function computeOrgHealth(depts) {
 }
 
 function applyRecoveryToDepts(depts) {
-  return depts.map(d => ({ ...d, gaming: d.gaming * 0.5, reEscalations: 0, latency: 0 }));
+  return depts.map(d => ({
+    ...d,
+    kpi: d.kpi * 0.5 + d.reality * 0.5,
+    gaming: d.gaming * 0.5,
+    reEscalations: 0,
+    latency: 0
+  }));
 }
 
 function runTick(state, cfg) {
@@ -121,6 +105,7 @@ function runTick(state, cfg) {
   let currentMode = state.mode;
   let crisisDayCount = state.crisisDayCount || 0;
   let cooldownRemaining = state.cooldownRemaining || 0;
+  let graceRemaining = state.graceRemaining || 0;
   let crisisEventCount = state.crisisEventCount || 0;
   let pendingIntervention = state.pendingIntervention || false;
   let interventionDelayRemaining = state.interventionDelayRemaining || 0;
@@ -130,20 +115,18 @@ function runTick(state, cfg) {
 
   if (pendingIntervention && interventionDelayRemaining > 0) {
     interventionDelayRemaining--;
-    if (interventionDelayRemaining === 0) {
-      pendingIntervention = false;
-      recoveryTriggeredThisTick = true;
-    }
+    if (interventionDelayRemaining === 0) { pendingIntervention = false; recoveryTriggeredThisTick = true; }
   }
 
   if (currentMode === "Crisis") {
     crisisDayCount++;
-    if (crisisDayCount >= (cfg.autoCrisisDaysForRecovery || 30)) {
-      recoveryTriggeredThisTick = true;
-      crisisDayCount = 0;
-    }
-  } else if (currentMode !== "Recovery" && currentMode !== "Cooldown") {
+    if (crisisDayCount >= (cfg.autoCrisisDaysForRecovery || 30)) { recoveryTriggeredThisTick = true; crisisDayCount = 0; }
+  } else if (currentMode !== "Cooldown") {
     crisisDayCount = 0;
+  }
+
+  if (graceRemaining > 0 && currentMode !== "Cooldown") {
+    graceRemaining = Math.max(0, graceRemaining - 1);
   }
 
   let newBaseline = state.baselineDepts.map(d => stepBaselineDept(d, cfg, shock));
@@ -154,6 +137,7 @@ function runTick(state, cfg) {
     shadowNoise = shadowNoise * 0.8;
     crisisDayCount = 0;
     cooldownRemaining = cfg.cooldownDays || 15;
+    graceRemaining = Math.floor((cfg.cooldownDays || 15) / 2);
     interventionMarkers = [...interventionMarkers, state.tick];
     newAino = newAino.map(d => stepAinoDept(d, cfg, shock, "Recovery"));
     currentMode = "Cooldown";
@@ -163,6 +147,7 @@ function runTick(state, cfg) {
     cooldownRemaining = Math.max(0, cooldownRemaining - 1);
     if (cooldownRemaining === 0) {
       currentMode = "Normal";
+      graceRemaining = Math.floor((cfg.cooldownDays || 15) / 2);
     }
 
   } else {
@@ -174,9 +159,8 @@ function runTick(state, cfg) {
     newMode = "Cooldown";
   } else {
     newMode = computeMode(newAino, cfg);
-    if (newMode === "Crisis" && state.mode !== "Crisis" && state.mode !== "Cooldown" && state.mode !== "Recovery") {
-      crisisEventCount++;
-    }
+    if (graceRemaining > 0 && newMode === "Crisis") newMode = "Tension";
+    if (newMode === "Crisis" && state.mode !== "Crisis" && state.mode !== "Cooldown") crisisEventCount++;
   }
 
   const maxReEsc = Math.max(...newAino.map(d => d.reEscalations));
@@ -184,7 +168,6 @@ function runTick(state, cfg) {
     newMode === "Crisis"   ?  0.010 :
     newMode === "Tension"  ?  0.005 :
     newMode === "Cooldown" ? -0.005 :
-    newMode === "Recovery" ? -0.008 :
                              -0.003;
   const newCapture = clamp(state.captureRisk + riskDelta + maxReEsc * 0.001, 0, 1);
 
@@ -207,6 +190,7 @@ function runTick(state, cfg) {
     captureRisk: newCapture,
     crisisDayCount,
     cooldownRemaining,
+    graceRemaining,
     crisisEventCount,
     pendingIntervention,
     interventionDelayRemaining,
