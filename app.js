@@ -6,6 +6,25 @@ import {
 
 const { useState, useEffect, useRef, useCallback } = React;
 
+const initialState = {
+  tick: 0,
+  mode: "Normal",
+  crisisCount: 0,
+  captureRisk: 0,
+  shockActive: false,
+  forceResetToNormal: false,
+  baselineDepts: /* your init */,
+  ainoDepts: /* your init */,
+  history: {
+    baseHealth: [],
+    ainoHealth: [],
+    divergence: [],
+    mode: [],
+    interventions: [] // NEW
+  }
+};
+
+
 // Trigger Hierarchy Intervention (from UI)
 function triggerHierarchyIntervention() {
   setState(prev => ({
@@ -13,10 +32,6 @@ function triggerHierarchyIntervention() {
     forceResetToNormal: true
   }));
 }
-<button onClick={triggerHierarchyIntervention}>
-  Hierarchy Intervention
-</button>
-
 
 // --- MiniChart (pure SVG) ---
 function MiniChart({ data, color, label, height = 60 }) {
@@ -167,6 +182,13 @@ function App() {
         className="px-4 py-1.5 rounded text-xs font-bold bg-red-800 hover:bg-red-700 disabled:opacity-40"
         >
         ⚡ Political Shock
+        </button>
+
+        <button
+        className="px-3 py-1 rounded bg-amber-500 text-black text-sm"
+        onClick={triggerHierarchyIntervention}
+          >
+        Hierarchy Intervention
         </button>
 
         <label className="flex items-center gap-1 text-xs text-gray-400 ml-4">
@@ -512,6 +534,13 @@ function App() {
         color="#34d399"
         label="Mode Intensity"
         />
+        <MiniChart
+        data={state.history.mode}
+        color="#f97316"
+        label="Mode Intensity"
+        markers={state.history.interventions}
+        />
+
         </div>
         </div>
 
@@ -542,6 +571,11 @@ function App() {
             <div className="text-2xl font-bold text-red-400">
             {(state.captureRisk * 100).toFixed(0)}%
             </div>
+            </div>
+            
+            <div className="mt-2 text-sm">
+            <p>Capture Risk: {(state.captureRisk * 100).toFixed(1)}%</p>
+            <p>Crisis events: {state.crisisCount}</p>
             </div>
             </div>
 
