@@ -79,9 +79,9 @@ function computeMode(depts, cfg) {
   return "Normal";
 }
 
-function computeOrgHealth(depts) {
+function computeOrgHealth(depts, useShadow = false) {
   const avgDiv =
-    depts.reduce((s, d) => s + Math.abs(d.kpi - d.reality), 0) / depts.length;
+    depts.reduce((s, d) => s + Math.abs(d.kpi - (useShadow ? d.shadowMetric : d.reality)), 0) / depts.length;
   const avgGaming = depts.reduce((s, d) => s + d.gaming, 0) / depts.length;
   return clamp(1 - avgDiv * 0.9 - avgGaming * 0.3, 0, 1);
 }
@@ -97,7 +97,10 @@ function runTick(state, cfg) {
       history: {
         ...state.history,
         interventions: [...state.history.interventions, state.tick],
-        mode: [...state.history.mode, 0.2]
+        mode: [...state.history.mode, 0.2],
+        baseHealth: [...state.history.baseHealth, state.history.baseHealth.at(-1) ?? 0.5],
+        ainoHealth: [...state.history.ainoHealth, state.history.ainoHealth.at(-1) ?? 0.5],
+        divergence: [...state.history.divergence, state.history.divergence.at(-1) ?? 0]
       },
       tick: state.tick + 1
     };
@@ -132,7 +135,7 @@ function runTick(state, cfg) {
   );
 
   const bh = computeOrgHealth(newBaseline);
-  const ah = computeOrgHealth(newAino);
+  const ah = computeOrgHealth(newAino, true);
   const div =
     newAino.reduce((s, d) => s + Math.abs(d.kpi - d.shadowMetric), 0) /
     newAino.length;
