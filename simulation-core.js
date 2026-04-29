@@ -8,23 +8,52 @@ export function rand(lo, hi) {
   return lo + Math.random() * (hi - lo);
 }
 
+// DEFAULT CONFIGURATION
 export const DEFAULT_CONFIG = {
-  ticks: 120,
+  ticks: 720,
   gamingRate: 0.02,
-  shadowNoise: 0.02,
-  shockDurationMs: 1800,
+  shadowNoise: 0.05,
+  gamingDecay: {
+    tension: 0.3,
+    crisis: 0.5
+  },
   thresholds: {
     tension: 0.25,
     crisis: 0.45,
-    latency: 3,
-    reEscalation: 3
-  },
-  gamingDecay: {
-    Normal: 0.0,
-    Tension: 0.01,
-    Crisis: 0.02
+    latency: 10,
+    reEscalation: 5
   }
 };
+
+// Helper function to create a department with randomized metrics
+function createDept(name) {
+  const reality = 50 + rand() * 30; // 50-80 range
+  const kpi = reality + (rand() - 0.5) * 20; // KPI can deviate from reality
+  const gaming = rand() * 10; // Initial gaming level 0-10
+  return { name, reality, kpi, gaming };
+}
+
+// Create initial state for the simulation
+export function createInitialState() {
+  const deptNames = ['Finance', 'Operations', 'Compliance', 'R&D'];
+  
+  return {
+    tick: 0,
+    mode: 'Normal',
+    baselineDepts: deptNames.map(createDept),
+    ainoDepts: deptNames.map(name => ({
+      ...createDept(name),
+      shadow: 0,
+      latency: 0,
+      reEscalationCount: 0
+    })),
+    history: {
+      health: [],
+      divergence: [],
+      captureRisk: []
+    }
+  };
+}
 
 function createDept(name) {
   const reality = rand(0.55, 0.8);
