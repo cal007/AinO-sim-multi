@@ -1,60 +1,73 @@
 import {
-    DEFAULT_CONFIG,
-    createInitialState,
-    runTick
+  DEFAULT_CONFIG,
+  createInitialState,
+  runTick
 } from "./simulation-core.js";
 
 const { useState, useEffect, useRef, useCallback } = React;
 
-const initialState = {
-  tick: 0,
-  mode: "Normal",
-  crisisCount: 0,
-  captureRisk: 0,
-  shockActive: false,
-  forceResetToNormal: false,
-  baselineDepts: /* your init */,
-  ainoDepts: /* your init */,
-  history: {
-    baseHealth: [],
-    ainoHealth: [],
-    divergence: [],
-    mode: [],
-    interventions: [] // NEW
-  }
-};
+function App() {
 
+  const [state, setState] = useState(() => ({
+    tick: 0,
+    mode: "Normal",
+    crisisCount: 0,
+    captureRisk: 0,
+    shockActive: false,
+    forceResetToNormal: false,
 
-// Trigger Hierarchy Intervention (from UI)
-function triggerHierarchyIntervention() {
-  setState(prev => ({
-    ...prev,
-    forceResetToNormal: true
+    // REAL initialization
+    ...createInitialState(),
+
+    history: {
+      baseHealth: [],
+      ainoHealth: [],
+      divergence: [],
+      mode: [],
+      interventions: []
+    }
   }));
-}
+
+  // Hierarchy Intervention
+  const triggerHierarchyIntervention = () => {
+    setState(prev => ({
+      ...prev,
+      forceResetToNormal: true
+    }));
+  };
 
 // --- MiniChart (pure SVG) ---
-function MiniChart({ data, color, label, height = 60 }) {
-    if (!data || data.length < 2) return null;
-    const w = 260, h = height;
-    const pts = data
-    .map((v, i) => `${(i / (data.length - 1)) * w},${h - v * h}`)
-    .join(" ");
+function MiniChart({ data, color, label, markers = [] }) {
+  const max = Math.max(...data, 1);
+  const points = data.map((v, i) => `${i},${max - v}`).join(" ");
 
-    return (
-        <div className="mb-1">
-        <div className="text-xs text-gray-400 mb-0.5">{label}</div>
-        <svg width={w} height={h} className="bg-gray-900 rounded">
+  return (
+    <div className="w-full">
+      <p className="text-xs mb-1">{label}</p>
+      <svg viewBox={`0 0 ${data.length} ${max}`} className="w-full h-24 bg-gray-800">
         <polyline
-        points={pts}
-        fill="none"
-        stroke={color}
-        strokeWidth="1.5"
+          fill="none"
+          stroke={color}
+          strokeWidth="0.5"
+          points={points}
         />
-        </svg>
-        </div>
-    );
+
+        {markers.map((m, idx) => (
+          <line
+            key={idx}
+            x1={m}
+            x2={m}
+            y1="0"
+            y2={max}
+            stroke="red"
+            strokeWidth="0.5"
+          />
+        ))}
+      </svg>
+    </div>
+  );
 }
+
 
 // --- Main App ---
 function App() {
