@@ -1,18 +1,14 @@
-// -------------------------------------------------------------
-// Utility
-// -------------------------------------------------------------
-function clamp(v, lo, hi) {
+// simulation-core.js
+
+export function clamp(v, lo, hi) {
   return Math.max(lo, Math.min(hi, v));
 }
 
-function rand(lo, hi) {
+export function rand(lo, hi) {
   return lo + Math.random() * (hi - lo);
 }
 
-// -------------------------------------------------------------
-// Department Step Functions
-// -------------------------------------------------------------
-function stepBaselineDept(dept, cfg, shock) {
+export function stepBaselineDept(dept, cfg, shock) {
   const realityDrift = rand(-0.03, 0.03) + (shock ? rand(-0.08, 0) : 0);
   const newReality = clamp(dept.reality + realityDrift, 0, 1);
 
@@ -24,7 +20,7 @@ function stepBaselineDept(dept, cfg, shock) {
   return { ...dept, reality: newReality, kpi: newKpi, gaming: newGaming };
 }
 
-function stepAinoDept(dept, cfg, shock, mode) {
+export function stepAinoDept(dept, cfg, shock, mode) {
   const realityDrift = rand(-0.03, 0.03) + (shock ? rand(-0.08, 0) : 0);
   const newReality = clamp(dept.reality + realityDrift, 0, 1);
 
@@ -67,10 +63,7 @@ function stepAinoDept(dept, cfg, shock, mode) {
   };
 }
 
-// -------------------------------------------------------------
-// Mode Logic
-// -------------------------------------------------------------
-function computeMode(depts, cfg) {
+export function computeMode(depts, cfg) {
   const avgDiv =
     depts.reduce((s, d) => s + Math.abs(d.kpi - d.shadowMetric), 0) /
     depts.length;
@@ -86,29 +79,22 @@ function computeMode(depts, cfg) {
   return "Normal";
 }
 
-// -------------------------------------------------------------
-// Org Health
-// -------------------------------------------------------------
-function computeOrgHealth(depts) {
+export function computeOrgHealth(depts) {
   const avgDiv =
     depts.reduce((s, d) => s + Math.abs(d.kpi - d.reality), 0) / depts.length;
   const avgGaming = depts.reduce((s, d) => s + d.gaming, 0) / depts.length;
   return clamp(1 - avgDiv * 0.9 - avgGaming * 0.3, 0, 1);
 }
 
-// -------------------------------------------------------------
-// Tick Logic (Updated with Crisis Counter + Intervention)
-// -------------------------------------------------------------
-function runTick(state, cfg) {
+export function runTick(state, cfg) {
   if (state.tick >= cfg.ticks) return state;
 
-  // If hierarchy intervention was triggered externally
+  // hierarchy intervention
   if (state.forceResetToNormal) {
     return {
       ...state,
       mode: "Normal",
       forceResetToNormal: false,
-      crisisCount: state.crisisCount, // unchanged
       history: {
         ...state.history,
         interventions: [...state.history.interventions, state.tick],
@@ -129,7 +115,6 @@ function runTick(state, cfg) {
 
   const newMode = computeMode(newAino, cfg);
 
-  // Crisis counter
   const crisisCount =
     newMode === "Crisis"
       ? state.crisisCount + 1
@@ -170,7 +155,7 @@ function runTick(state, cfg) {
       ainoHealth: [...state.history.ainoHealth, ah],
       divergence: [...state.history.divergence, div],
       mode: [...state.history.mode, modeIntensity],
-      interventions: [...state.history.interventions] // unchanged unless reset
+      interventions: [...state.history.interventions]
     }
   };
 }
