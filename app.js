@@ -225,6 +225,12 @@ function App() {
                         </span>
                     )}
 
+                    {(state.graceRemaining > 0) && state.mode !== "Cooldown" && (
+                        <span className="text-teal-400 text-xs">
+                            🛡 Grace: {state.graceRemaining} day(s) (Crisis blocked)
+                        </span>
+                    )}
+
                     <span className="ml-auto text-xs text-gray-500">
                         Shadow Capture Risk:{" "}
                         <span className={state.captureRisk > 0.5 ? "text-red-400" : "text-green-400"}>
