@@ -14,72 +14,77 @@ const SHOCK_PROFILES = {
   3: { realityDrift: [-0.18, -0.08], kpiDrop: [-0.18, -0.07], gamingSpike: 0.15, latencyBoost: 10, shadowFreeze: true }
 };
 
-const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
-const rand = (lo, hi) => lo + Math.random() * (hi - lo);
+// --- Seeded PRNG (mulberry32) ---
+function makePRNG(seed) {
+  let s = seed >>> 0;
+  return {
+    next() {
+      s = (s + 0x6D2B79F5) >>> 0;
+      let t = Math.imul(s ^ (s >>> 15), 1 | s);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) >>> 0;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    }
+  };
+}
 
-const DEFAULT_CONFIG = {
-  ticks: 720,
-  gamingRate: 0.02,
-  gamingDecay: { Normal: 0.01, Tension: 0.02, Crisis: 0.03 },
-  shadowNoise: 0.02,
-  thresholds: { tension: 0.25, crisis: 0.50, reEscalation: 2, latency: 14 },
-  shockDurationDays: 7,
-  shockIntensity: 2,
-  autoCrisisDaysForRecovery: 30,
-  cooldownDays: 15
-};
+function rand(lo, hi, rng) {
+  const r = rng ? rng.next() : Math.random();
+  return lo + r * (hi - lo);
+}
+
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
 function initDept(name) {
   return { name, kpi: 0.5, reality: 0.5, gaming: 0, shadowMetric: 0.5, latency: 0, reEscalations: 0 };
 }
 
-function stepSharedReality(reality, shock, shockProfile) {
+function stepSharedReality(reality, shock, shockProfile, rng) {
   const [dlo, dhi] = shock ? shockProfile.realityDrift : [-0.03, 0.03];
-  return clamp(reality + rand(dlo, dhi), 0, 1);
+  return clamp(reality + rand(dlo, dhi, rng), 0, 1);
 }
 
-function stepBaselineDept(dept, cfg, shock, shockProfile, baselineMode, sharedReality) {
+function stepBaselineDept(dept, cfg, shock, shockProfile, baselineMode, sharedReality, rng) {
   const newReality = sharedReality;
   let newKpi, newGaming;
   if (baselineMode === "Recovery" || baselineMode === "Cooldown") {
-    newKpi = clamp(dept.kpi + (newReality - dept.kpi) * 0.05 + rand(-0.03, 0.03), 0, 1);
+    newKpi = clamp(dept.kpi + (newReality - dept.kpi) * 0.05 + rand(-0.03, 0.03, rng), 0, 1);
     newGaming = clamp(dept.gaming * 0.97, 0, 1);
   } else {
     const gamingPressure = 0.015 + dept.gaming * 0.01;
-    newKpi = clamp(dept.kpi + gamingPressure + rand(-0.01, 0.01), 0, 1);
+    newKpi = clamp(dept.kpi + gamingPressure + rand(-0.01, 0.01, rng), 0, 1);
     newGaming = clamp(dept.gaming + cfg.gamingRate, 0, 1);
     if (shock) {
       const [klo, khi] = shockProfile.kpiDrop;
-      newKpi = clamp(newKpi + rand(klo, khi), 0, 1);
+      newKpi = clamp(newKpi + rand(klo, khi, rng), 0, 1);
       newGaming = clamp(newGaming + shockProfile.gamingSpike * 0.5, 0, 1);
     }
     const gap = newKpi - newReality;
     if (gap > 0.3) {
-      newKpi = clamp(newKpi - gap * 0.04 + rand(-0.02, 0.02), 0, 1);
+      newKpi = clamp(newKpi - gap * 0.04 + rand(-0.02, 0.02, rng), 0, 1);
       newGaming = clamp(newGaming * 0.98, 0, 1);
     }
   }
   return { ...dept, reality: newReality, kpi: newKpi, gaming: newGaming };
 }
 
-function stepAinoDept(dept, cfg, shock, shockProfile, mode, sharedReality) {
+function stepAinoDept(dept, cfg, shock, shockProfile, mode, sharedReality, rng) {
   const newReality = sharedReality;
   let newShadow, newKpi, newGaming, newLatency, newReEsc;
   if (mode === "Recovery") {
-    newKpi = clamp(newReality + rand(-0.05, 0.05), 0, 1);
-    newShadow = clamp(dept.shadowMetric + (newReality - dept.shadowMetric) * 0.30 + rand(-0.01, 0.01), 0, 1);
+    newKpi = clamp(newReality + rand(-0.05, 0.05, rng), 0, 1);
+    newShadow = clamp(dept.shadowMetric + (newReality - dept.shadowMetric) * 0.30 + rand(-0.01, 0.01, rng), 0, 1);
     newGaming = clamp(dept.gaming * 0.85, 0, 1);
     newLatency = 0; newReEsc = 0;
   } else if (mode === "Cooldown") {
-    newKpi = clamp(dept.kpi + (newReality - dept.kpi) * 0.10 + rand(-0.01, 0.01), 0, 1);
-    newShadow = clamp(dept.shadowMetric + (newReality - dept.shadowMetric) * 0.15 + rand(-0.005, 0.005), 0, 1);
+    newKpi = clamp(dept.kpi + (newReality - dept.kpi) * 0.10 + rand(-0.01, 0.01, rng), 0, 1);
+    newShadow = clamp(dept.shadowMetric + (newReality - dept.shadowMetric) * 0.15 + rand(-0.005, 0.005, rng), 0, 1);
     newGaming = clamp(dept.gaming * 0.94, 0, 1);
     newLatency = 0; newReEsc = 0;
   } else {
     if (shock) {
-      newShadow = clamp(dept.shadowMetric + rand(-0.005, 0.005), 0, 1);
+      newShadow = clamp(dept.shadowMetric + rand(-0.005, 0.005, rng), 0, 1);
       const [klo, khi] = shockProfile.kpiDrop;
-      newKpi = clamp(dept.kpi + rand(klo, khi), 0, 1);
+      newKpi = clamp(dept.kpi + rand(klo, khi, rng), 0, 1);
       newGaming = clamp(dept.gaming + shockProfile.gamingSpike, 0, 1);
       newLatency = dept.latency + 1 + shockProfile.latencyBoost;
       newReEsc = dept.reEscalations;
@@ -88,7 +93,7 @@ function stepAinoDept(dept, cfg, shock, shockProfile, mode, sharedReality) {
         newReEsc++; newLatency = 0;
       }
     } else {
-      const shadowNoise = rand(-cfg.shadowNoise, cfg.shadowNoise);
+      const shadowNoise = rand(-cfg.shadowNoise, cfg.shadowNoise, rng);
       newShadow = clamp(newReality + shadowNoise, 0, 1);
       const modeFactors = {
         Normal:  { pressure: 1.0, decay: cfg.gamingDecay.Normal },
@@ -97,7 +102,7 @@ function stepAinoDept(dept, cfg, shock, shockProfile, mode, sharedReality) {
       };
       const f = modeFactors[mode] || modeFactors.Normal;
       const gamingPressure = 0.015 * f.pressure + dept.gaming * 0.005 * f.pressure;
-      newKpi = clamp(dept.kpi + gamingPressure + rand(-0.01, 0.01), 0, 1);
+      newKpi = clamp(dept.kpi + gamingPressure + rand(-0.01, 0.01, rng), 0, 1);
       newGaming = clamp(dept.gaming + cfg.gamingRate - f.decay, 0, 1);
       const divergence = Math.abs(newKpi - newShadow);
       newLatency = dept.latency + 1;
@@ -127,18 +132,19 @@ function computeOrgHealth(depts) {
   return clamp(1 - avgDiv * 0.9 - avgGaming * 0.3, 0, 1);
 }
 
-function applyRecoveryToAinoDepts(depts) {
+function applyRecoveryToAinoDepts(depts, rng) {
   return depts.map(d => ({ ...d, kpi: d.kpi * 0.5 + d.reality * 0.5, gaming: d.gaming * 0.50, shadowMetric: d.shadowMetric + (d.reality - d.shadowMetric) * 0.5, latency: 0, reEscalations: 0 }));
 }
 
-function applyRecoveryToBaselineDepts(depts) {
-  return depts.map(d => ({ ...d, kpi: d.kpi * 0.7 + d.reality * 0.3 + rand(-0.03, 0.03), gaming: d.gaming * 0.75 }));
+function applyRecoveryToBaselineDepts(depts, rng) {
+  return depts.map(d => ({ ...d, kpi: d.kpi * 0.7 + d.reality * 0.3 + rand(-0.03, 0.03, rng), gaming: d.gaming * 0.75 }));
 }
 
 function runTick(state, cfg) {
   if (state.tick >= cfg.ticks) return state;
 
   const shockProfile = SHOCK_PROFILES[cfg.shockIntensity] || SHOCK_PROFILES[2];
+  const rng = state.rng || null;
 
   let shockActive = state.shockActive;
   let shockDaysRemaining = state.shockDaysRemaining;
@@ -171,17 +177,17 @@ function runTick(state, cfg) {
     }
   }
 
-  const newSharedReality = state.sharedReality.map(r => stepSharedReality(r, shockActive, shockProfile));
+  const newSharedReality = state.sharedReality.map(r => stepSharedReality(r, shockActive, shockProfile, rng));
 
-  let newAino = state.ainoDepts.map((d, i) => stepAinoDept(d, cfg, shockActive, shockProfile, currentMode, newSharedReality[i]));
-  let newBaseline = state.baselineDepts.map((d, i) => stepBaselineDept(d, cfg, shockActive, shockProfile, baselineMode, newSharedReality[i]));
+  let newAino = state.ainoDepts.map((d, i) => stepAinoDept(d, cfg, shockActive, shockProfile, currentMode, newSharedReality[i], rng));
+  let newBaseline = state.baselineDepts.map((d, i) => stepBaselineDept(d, cfg, shockActive, shockProfile, baselineMode, newSharedReality[i], rng));
 
   if (currentMode === MODES.RECOVERY) {
     const bhSnap = computeOrgHealth(newBaseline);
     const ahSnap = computeOrgHealth(newAino);
     recoveryHealthMarkers.push({ tick: state.tick, baseHealth: bhSnap, ainoHealth: ahSnap });
-    newAino = applyRecoveryToAinoDepts(newAino);
-    newBaseline = applyRecoveryToBaselineDepts(newBaseline);
+    newAino = applyRecoveryToAinoDepts(newAino, rng);
+    newBaseline = applyRecoveryToBaselineDepts(newBaseline, rng);
     currentMode = MODES.COOLDOWN; baselineMode = MODES.COOLDOWN;
   }
 
@@ -211,8 +217,8 @@ function runTick(state, cfg) {
       const bhSnap = computeOrgHealth(newBaseline);
       const ahSnap = computeOrgHealth(newAino);
       recoveryHealthMarkers.push({ tick: state.tick, baseHealth: bhSnap, ainoHealth: ahSnap });
-      newAino = applyRecoveryToAinoDepts(newAino);
-      newBaseline = applyRecoveryToBaselineDepts(newBaseline);
+      newAino = applyRecoveryToAinoDepts(newAino, rng);
+      newBaseline = applyRecoveryToBaselineDepts(newBaseline, rng);
       newMode = MODES.COOLDOWN; newBaselineMode = MODES.COOLDOWN;
       cooldownRemaining = cfg.cooldownDays; baselineCooldownRemaining = cfg.cooldownDays;
       graceRemaining = Math.floor(cfg.cooldownDays / 2);
@@ -246,6 +252,7 @@ function runTick(state, cfg) {
     shockActive, shockDaysRemaining,
     crisisDayCount, cooldownRemaining, baselineCooldownRemaining, graceRemaining,
     crisisEventCount, pendingIntervention, interventionDelayRemaining,
+    rng,
     history: {
       baseHealth: [...state.history.baseHealth, bh],
       ainoHealth: [...state.history.ainoHealth, ah],
@@ -257,8 +264,60 @@ function runTick(state, cfg) {
   };
 }
 
+// --- Monte Carlo runner (called from worker message) ---
+function runFullSimulation(cfg) {
+  const DEPT_NAMES_LOCAL = ["Sales", "Ops", "Finance", "Product"];
+  const sharedReality = DEPT_NAMES_LOCAL.map(() => 0.5);
+  const rng = cfg.useRandomSeed ? makePRNG(cfg.randomSeed) : null;
+  let state = {
+    tick: 0,
+    sharedReality,
+    baselineDepts: DEPT_NAMES_LOCAL.map(n => ({ name: n, kpi: 0.5, reality: 0.5, gaming: 0, shadowMetric: 0.5, latency: 0, reEscalations: 0 })),
+    ainoDepts: DEPT_NAMES_LOCAL.map(n => ({ name: n, kpi: 0.5, reality: 0.5, gaming: 0, shadowMetric: 0.5, latency: 0, reEscalations: 0 })),
+    mode: "Normal",
+    baselineMode: "Normal",
+    captureRisk: 0,
+    shockActive: false,
+    shockDaysRemaining: 0,
+    crisisDayCount: 0,
+    cooldownRemaining: 0,
+    baselineCooldownRemaining: 0,
+    graceRemaining: 0,
+    crisisEventCount: 0,
+    pendingIntervention: false,
+    interventionDelayRemaining: 0,
+    rng,
+    history: { baseHealth: [], ainoHealth: [], divergence: [], mode: [], interventionMarkers: [], recoveryHealthMarkers: [] }
+  };
+  while (state.tick < cfg.ticks) state = runTick(state, cfg);
+  return state;
+}
+
 self.onmessage = function(e) {
-  const { state, cfg, steps = 1 } = e.data;
+  const { type, state, cfg, steps = 1, mcRuns = 100, mcSeedBase = 0 } = e.data;
+
+  if (type === "montecarlo") {
+    // Run N full simulations with different seeds
+    const results = [];
+    for (let i = 0; i < mcRuns; i++) {
+      const mcCfg = { ...cfg, useRandomSeed: true, randomSeed: mcSeedBase + i };
+      const finalState = runFullSimulation(mcCfg);
+      const h = finalState.history;
+      results.push({
+        finalAinoHealth: h.ainoHealth.at(-1) ?? 0,
+        finalBaseHealth: h.baseHealth.at(-1) ?? 0,
+        finalCaptureRisk: finalState.captureRisk,
+        crisisCount: finalState.crisisEventCount,
+        interventionCount: h.interventionMarkers.length,
+        ainoHealthHistory: h.ainoHealth,
+        baseHealthHistory: h.baseHealth
+      });
+    }
+    self.postMessage({ type: "montecarlo_result", results });
+    return;
+  }
+
+  // Default: step simulation
   let s = state;
   for (let i = 0; i < steps; i++) s = runTick(s, cfg);
   self.postMessage(s);
