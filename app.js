@@ -40,24 +40,39 @@ function rand(lo, hi, rng) {
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
-const DEFAULT_CONFIG = {
-  ticks: 720,
-  gamingRate: 0.02,
-  gamingDecay: { Normal: 0.01, Tension: 0.02, Crisis: 0.03 },
-  shadowNoise: 0.02,
-  thresholds: {
-    tension: 0.25,
-    crisis: 0.50,
-    reEscalation: 2,
-    latency: 14
+// ── Presets ──────────────────────────────────────────────────────────────────
+const PRESETS = {
+  recommended: {
+    label: "✅ Recommended",
+    ticks: 365,
+    gamingRate: 0.02,
+    gamingDecay: { Normal: 0.01, Tension: 0.02, Crisis: 0.03 },
+    shadowNoise: 0.02,
+    thresholds: { tension: 0.25, crisis: 0.50, reEscalation: 2, latency: 14 },
+    shockDurationDays: 7,
+    shockIntensity: 1,
+    autoCrisisDaysForRecovery: 7,
+    cooldownDays: 30,
+    randomSeed: 42,
+    useRandomSeed: true
   },
-  shockDurationDays: 7,
-  shockIntensity: 2,
-  autoCrisisDaysForRecovery: 30,
-  cooldownDays: 15,
-  randomSeed: 42,          // default seed
-  useRandomSeed: true      // when false → Math.random() (non-deterministic)
+  stress: {
+    label: "🔥 Stress Test",
+    ticks: 720,
+    gamingRate: 0.02,
+    gamingDecay: { Normal: 0.01, Tension: 0.02, Crisis: 0.03 },
+    shadowNoise: 0.02,
+    thresholds: { tension: 0.25, crisis: 0.50, reEscalation: 2, latency: 14 },
+    shockDurationDays: 7,
+    shockIntensity: 2,
+    autoCrisisDaysForRecovery: 30,
+    cooldownDays: 15,
+    randomSeed: 42,
+    useRandomSeed: true
+  }
 };
+
+const DEFAULT_CONFIG = { ...PRESETS.recommended };
 
 // --- Department init ---
 function initDept(name) {
@@ -814,6 +829,93 @@ function GovernanceDashboard({ state, cfg, finished }) {
                         </div>
                     </div>
 
+                    {/* AïnO vs Baseline comparison table */}
+                    <div className="mt-3 mb-3 bg-gray-800 rounded border border-gray-700 p-3 text-xs">
+                        <div className="text-gray-300 font-bold mb-2">📊 AïnO vs Baseline — Head-to-Head</div>
+                        <table className="w-full text-xs">
+                            <thead>
+                                <tr className="text-gray-500 border-b border-gray-700">
+                                    <th className="text-left pb-1">Metric</th>
+                                    <th className="text-right pb-1 text-blue-300">Baseline</th>
+                                    <th className="text-right pb-1 text-purple-300">AïnO</th>
+                                    <th className="text-right pb-1">Δ</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {(() => {
+                                    const ainoH = history.ainoHealth.at(-1) ?? 0;
+                                    const baseH = history.baseHealth.at(-1) ?? 0;
+                                    const dH = ainoH - baseH;
+                                    const dHColor = dH > 0.02 ? "#4ade80" : dH < -0.02 ? "#f87171" : "#facc15";
+
+                                    const ainoCap = state.captureRisk ?? 0;
+                                    const baseCap = null; // baseline has no capture risk
+                                    const crises = state.crisisEventCount ?? 0;
+
+                                    const ainoModeArr = history.mode || [];
+                                    const crisisTicks = ainoModeArr.filter(m => m >= 1.0).length;
+                                    const crisisPct = ainoModeArr.length > 0 ? crisisTicks / ainoModeArr.length : 0;
+
+                                    const rows = [
+                                        {
+                                            label: "Final Health",
+                                            base: (baseH * 100).toFixed(1) + "%",
+                                            aino: (ainoH * 100).toFixed(1) + "%",
+                                            delta: (dH >= 0 ? "+" : "") + (dH * 100).toFixed(1) + "pp",
+                                            dColor: dHColor
+                                        },
+                                        {
+                                            label: "Capture Risk",
+                                            base: "—",
+                                            aino: (ainoCap * 100).toFixed(0) + "%",
+                                            delta: ainoCap > 0.5 ? "⚠ High" : "✓ OK",
+                                            dColor: ainoCap > 0.5 ? "#f87171" : "#4ade80"
+                                        },
+                                        {
+                                            label: "Crisis Events",
+                                            base: "—",
+                                            aino: crises,
+                                            delta: crises === 0 ? "✓ None" : crises <= 3 ? "Moderate" : "⚠ Many",
+                                            dColor: crises === 0 ? "#4ade80" : crises <= 3 ? "#facc15" : "#f87171"
+                                        },
+                                        {
+                                            label: "Time in Crisis",
+                                            base: "—",
+                                            aino: (crisisPct * 100).toFixed(0) + "%",
+                                            delta: crisisPct < 0.1 ? "✓ Low" : crisisPct < 0.3 ? "Moderate" : "⚠ High",
+                                            dColor: crisisPct < 0.1 ? "#4ade80" : crisisPct < 0.3 ? "#facc15" : "#f87171"
+                                        },
+                                        {
+                                            label: "Stability Index",
+                                            base: "—",
+                                            aino: si !== null ? si.toFixed(3) : "—",
+                                            delta: siLabel,
+                                            dColor: si !== null ? (si >= 0.65 ? "#4ade80" : si >= 0.45 ? "#facc15" : "#f87171") : "#6b7280"
+                                        },
+                                        {
+                                            label: "Resilience Score",
+                                            base: "0.500 (ref)",
+                                            aino: rs !== null ? rs.toFixed(3) : "—",
+                                            delta: rsLabel,
+                                            dColor: rs !== null ? (rs >= 0.65 ? "#4ade80" : rs >= 0.50 ? "#facc15" : "#f87171") : "#6b7280"
+                                        }
+                                    ];
+                                    return rows.map((r, i) => (
+                                        <tr key={i} className="border-b border-gray-700 last:border-0">
+                                            <td className="py-1 text-gray-400">{r.label}</td>
+                                            <td className="py-1 text-right text-blue-300">{r.base}</td>
+                                            <td className="py-1 text-right text-purple-300">{r.aino}</td>
+                                            <td className="py-1 text-right font-bold" style={{ color: r.dColor }}>{r.delta}</td>
+                                        </tr>
+                                    ));
+                                })()}
+                            </tbody>
+                        </table>
+                        <div className="mt-2 text-gray-600 italic">
+                            Baseline = KPI-only track (no AïnO governance). Δ = AïnO advantage.
+                        </div>
+                    </div>
+
                     {/* Formula reference */}
                     <details className="text-xs text-gray-500">
                         <summary className="cursor-pointer hover:text-gray-300">📖 Formula reference</summary>
@@ -919,6 +1021,25 @@ function App() {
         <div className="max-w-5xl mx-auto">
 
         <h1 className="text-lg font-bold text-white mb-2">AïnO Governance Simulation</h1>
+
+        {/* ── Preset buttons ── */}
+        <div className="flex gap-2 mb-2 items-center text-xs">
+            <span className="text-gray-500">Preset:</span>
+            {Object.entries(PRESETS).map(([key, preset]) => (
+                <button key={key}
+                    onClick={() => { setCfg({ ...preset }); setFinished(false); }}
+                    className={`px-3 py-1 rounded font-bold border ${
+                        cfg.shockIntensity === preset.shockIntensity &&
+                        cfg.autoCrisisDaysForRecovery === preset.autoCrisisDaysForRecovery &&
+                        cfg.ticks === preset.ticks
+                            ? "bg-indigo-700 border-indigo-400 text-white"
+                            : "bg-gray-800 border-gray-600 text-gray-400 hover:border-gray-400"
+                    }`}>
+                    {preset.label}
+                </button>
+            ))}
+            <span className="text-gray-600 text-xs ml-2 italic">← click to load preset, then ↺ Reset &amp; ▶ Run</span>
+        </div>
 
         {/* ── Controls ── */}
         <div className="flex flex-wrap gap-2 mb-4 items-center">
