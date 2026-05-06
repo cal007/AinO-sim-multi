@@ -15,21 +15,21 @@ const SHOCK_PROFILES = {
 };
 
 // --- Seeded PRNG (mulberry32) ---
+// Returns a plain {s} object - safe for structured clone / postMessage.
 function makePRNG(seed) {
-  let s = seed >>> 0;
-  return {
-    next() {
-      s = (s + 0x6D2B79F5) >>> 0;
-      let t = Math.imul(s ^ (s >>> 15), 1 | s);
-      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) >>> 0;
-      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-    }
-  };
+  return { s: seed >>> 0 };
+}
+
+function rngNext(rng) {
+  if (!rng) return Math.random();
+  rng.s = (rng.s + 0x6D2B79F5) >>> 0;
+  let t = Math.imul(rng.s ^ (rng.s >>> 15), 1 | rng.s);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) >>> 0;
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
 }
 
 function rand(lo, hi, rng) {
-  const r = rng ? rng.next() : Math.random();
-  return lo + r * (hi - lo);
+  return lo + rngNext(rng) * (hi - lo);
 }
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));

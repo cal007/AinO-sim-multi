@@ -1,8 +1,7 @@
 import {
     DEFAULT_CONFIG,
     createInitialState,
-    runTick,
-    makePRNG
+    runTick
 } from "./simulation-core.js";
 
 const { useState, useEffect, useRef, useCallback } = React;

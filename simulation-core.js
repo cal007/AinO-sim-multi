@@ -18,22 +18,24 @@ const SHOCK_PROFILES = {
 // Returns a stateless [0,1) float given a uint32 seed+counter.
 // We thread a mutable `rngState` object through the simulation so
 // every call to rand() advances it deterministically.
+// makePRNG returns a plain serializable object {s: uint32}
+// so it can safely pass through postMessage (structured clone).
 export function makePRNG(seed) {
-  let s = seed >>> 0;
-  return {
-    next() {
-      s = (s + 0x6D2B79F5) >>> 0;
-      let t = Math.imul(s ^ (s >>> 15), 1 | s);
-      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) >>> 0;
-      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-    }
-  };
+  return { s: seed >>> 0 };
 }
 
-// rand helper that uses the PRNG when available, falls back to Math.random
+// Advance the PRNG state and return a [0,1) float (mulberry32).
+// Mutates rng.s in-place so the sequence is deterministic across ticks.
+function rngNext(rng) {
+  if (!rng) return Math.random();
+  rng.s = (rng.s + 0x6D2B79F5) >>> 0;
+  let t = Math.imul(rng.s ^ (rng.s >>> 15), 1 | rng.s);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) >>> 0;
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+}
+
 function rand(lo, hi, rng) {
-  const r = rng ? rng.next() : Math.random();
-  return lo + r * (hi - lo);
+  return lo + rngNext(rng) * (hi - lo);
 }
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
