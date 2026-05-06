@@ -442,19 +442,17 @@ const { useState, useEffect, useRef, useCallback } = React;
 // ─── Stability Index ─────────────────────────────────────────────────────────
 // StabilityIndex = 1 – (0.4·var(modeIntensity) + 0.3·normCrises + 0.3·avgGaming)
 // All components normalised to [0,1] before weighting.
+// Unchanged — this is already AïnO-intrinsic (mode, divergence, crises).
 function computeStabilityIndex(history, crisisCount, ticks) {
     const modes = history.mode;
     if (!modes || modes.length < 2) return null;
     const mean = modes.reduce((a, b) => a + b, 0) / modes.length;
     const variance = modes.reduce((s, v) => s + (v - mean) ** 2, 0) / modes.length;
-    // variance of mode intensity is in [0, ~0.64] (max when all 0 or all 1)
     const normVariance = clamp(variance / 0.25, 0, 1);
     const normCrises   = clamp(crisisCount / 10, 0, 1);
-    // approximate avg gaming from divergence proxy (divergence ≈ gaming effect)
     const divArr = history.divergence;
     const avgDiv = divArr.reduce((a, b) => a + b, 0) / divArr.length;
     const normGaming = clamp(avgDiv / 0.5, 0, 1);
-
     const instability = 0.4 * normVariance + 0.3 * normCrises + 0.3 * normGaming;
     return clamp(1 - instability, 0, 1);
 }
@@ -467,33 +465,46 @@ function stabilityLabel(si) {
     return "Unstable";
 }
 
-// ─── Resilience Score ────────────────────────────────────────────────────────
-// ResilienceScore = speed_of_recovery – damage_penalty – capture_growth_penalty
-// speed_of_recovery  = 1 / (1 + avgCrisisDuration)   where avgCrisisDuration estimated from crisisCount & ticks in crisis
-// damage_penalty     = (1 – finalAinoHealth)
-// capture_growth_penalty = finalCaptureRisk
+// ─── Resilience Score (baseline-relative) ────────────────────────────────────
+// Answers: "Did AïnO do BETTER than doing nothing?"
+// Score = 0.5 means AïnO matched baseline. >0.5 = outperformed. <0.5 = underperformed.
+//
+// Components (all mapped to [0,1] centred at 0.5):
+//   healthGain   = clamp(0.5 + (ainoHealth – baseHealth) * 2, 0, 1)
+//                  → 0.5 when equal, 1.0 when AïnO is +0.25 ahead
+//   recoverySpeed = 1 / (1 + avgCrisisDuration / ticks * 10)
+//                  → pure AïnO crisis duration (no baseline equivalent)
+//   captureRisk  = 1 – finalCaptureRisk
+//                  → kept absolute: capture is an AïnO-specific risk
+//
+// ResilienceScore = 0.45·healthGain + 0.30·recoverySpeed + 0.25·(1–captureRisk)
 function computeResilienceScore(history, crisisCount, finalAinoHealth, finalCaptureRisk, ticks) {
     const modes = history.mode;
     if (!modes || modes.length < 2) return null;
 
-    // Count ticks in crisis (modeIntensity === 1.0)
+    const finalBaseHealth = history.baseHealth.at(-1) ?? 0.5;
+
+    // Health gain vs baseline — centred at 0.5
+    const healthGain = clamp(0.5 + (finalAinoHealth - finalBaseHealth) * 2, 0, 1);
+
+    // Recovery speed from crisis duration
     const crisisTicks = modes.filter(m => m >= 1.0).length;
     const avgCrisisDuration = crisisCount > 0 ? crisisTicks / crisisCount : 0;
-    const speedOfRecovery = 1 / (1 + avgCrisisDuration / ticks * 10);
+    const recoverySpeed = 1 / (1 + avgCrisisDuration / ticks * 10);
 
-    const damagePenalty = 1 - finalAinoHealth;
-    const capturePenalty = finalCaptureRisk;
+    // Capture risk penalty (AïnO-specific, absolute)
+    const captureScore = 1 - finalCaptureRisk;
 
-    const raw = speedOfRecovery - 0.4 * damagePenalty - 0.3 * capturePenalty;
+    const raw = 0.45 * healthGain + 0.30 * recoverySpeed + 0.25 * captureScore;
     return clamp(raw, 0, 1);
 }
 
 function resilienceLabel(rs) {
     if (rs === null) return "—";
-    if (rs >= 0.75) return "High Resilience";
-    if (rs >= 0.50) return "Moderate Resilience";
-    if (rs >= 0.25) return "Low Resilience";
-    return "Fragile";
+    if (rs >= 0.65) return "Outperforms Baseline";
+    if (rs >= 0.50) return "Matches Baseline";
+    if (rs >= 0.35) return "Below Baseline";
+    return "Significantly Worse";
 }
 
 // ─── MiniChart ───────────────────────────────────────────────────────────────
@@ -726,6 +737,7 @@ function GovernanceDashboard({ state, cfg, finished }) {
     const history = state.history;
     const finalAinoHealth = history.ainoHealth.at(-1) ?? 0;
     const finalBaseHealth = history.baseHealth.at(-1) ?? 0;
+    const healthDelta = finalAinoHealth - finalBaseHealth;
 
     const si = finished ? computeStabilityIndex(history, state.crisisEventCount, cfg.ticks) : null;
     const rs = finished ? computeResilienceScore(history, state.crisisEventCount, finalAinoHealth, state.captureRisk, cfg.ticks) : null;
@@ -733,26 +745,30 @@ function GovernanceDashboard({ state, cfg, finished }) {
     const siLabel = stabilityLabel(si);
     const rsLabel = resilienceLabel(rs);
 
-    // Composite governance score
+    // Composite governance score — RS is now centred at 0.5 so we weight accordingly
     const govScore = (si !== null && rs !== null)
         ? clamp((si * 0.5 + rs * 0.5), 0, 1)
         : null;
 
     const govLabel = govScore === null ? "—"
-        : govScore >= 0.75 ? "Strong Governance"
+        : govScore >= 0.65 ? "Strong Governance"
         : govScore >= 0.50 ? "Adequate Governance"
-        : govScore >= 0.25 ? "Weak Governance"
+        : govScore >= 0.35 ? "Weak Governance"
         : "Governance Failure";
 
     const govColor = govScore === null ? "#6b7280"
-        : govScore >= 0.75 ? "#4ade80"
+        : govScore >= 0.65 ? "#4ade80"
         : govScore >= 0.50 ? "#facc15"
-        : govScore >= 0.25 ? "#fb923c"
+        : govScore >= 0.35 ? "#fb923c"
         : "#ef4444";
+
+    const deltaColor = healthDelta > 0.02 ? "#4ade80" : healthDelta < -0.02 ? "#f87171" : "#facc15";
+    const deltaSign  = healthDelta >= 0 ? "+" : "";
 
     return (
         <div className="bg-gray-900 rounded border border-purple-700 p-4 mb-4">
-            <div className="text-sm font-bold text-purple-300 mb-3">🏛 Governance Dashboard</div>
+            <div className="text-sm font-bold text-purple-300 mb-1">🏛 Governance Dashboard</div>
+            <div className="text-xs text-gray-500 mb-3 italic">Resilience &amp; Governance scores are <span className="text-purple-300">baseline-relative</span> — 0.50 = matched baseline, &gt;0.50 = outperformed.</div>
 
             {!finished && (
                 <div className="text-xs text-gray-500 italic">Run the simulation to completion to see governance metrics.</div>
@@ -774,17 +790,18 @@ function GovernanceDashboard({ state, cfg, finished }) {
                             <div className="text-2xl font-bold text-blue-400">{si !== null ? si.toFixed(3) : "—"}</div>
                             <div className="text-gray-400 mt-1">{siLabel}</div>
                             <div className="text-gray-500 mt-1 leading-tight">
-                                Measures how calm and predictable the governance system was.
-                                High = low volatility, few crises, low divergence.
+                                AïnO-intrinsic. Measures governance calm: low mode volatility, few crises, low divergence.
                             </div>
                         </div>
                         <div className="bg-gray-800 rounded p-2 border border-green-900">
                             <div className="text-green-300 font-bold mb-1">🔄 Resilience Score</div>
                             <div className="text-2xl font-bold text-green-400">{rs !== null ? rs.toFixed(3) : "—"}</div>
                             <div className="text-gray-400 mt-1">{rsLabel}</div>
+                            <div className="text-xs mt-1" style={{ color: deltaColor }}>
+                                Health vs baseline: {deltaSign}{(healthDelta * 100).toFixed(1)}pp
+                            </div>
                             <div className="text-gray-500 mt-1 leading-tight">
-                                Measures how quickly the system recovers from shocks.
-                                High = short crises, fast recovery, low capture risk.
+                                Baseline-relative. 0.50 = matched baseline. Weights: 45% health gain, 30% recovery speed, 25% capture safety.
                             </div>
                         </div>
                         <div className="bg-gray-800 rounded p-2 border border-purple-900">
@@ -792,8 +809,7 @@ function GovernanceDashboard({ state, cfg, finished }) {
                             <div className="text-2xl font-bold" style={{ color: govColor }}>{govScore !== null ? govScore.toFixed(3) : "—"}</div>
                             <div className="text-gray-400 mt-1">{govLabel}</div>
                             <div className="text-gray-500 mt-1 leading-tight">
-                                Composite of Stability + Resilience.
-                                Overall governance quality indicator.
+                                Composite of Stability + Resilience. &gt;0.50 means AïnO added value vs no governance.
                             </div>
                         </div>
                     </div>
@@ -802,16 +818,18 @@ function GovernanceDashboard({ state, cfg, finished }) {
                     <details className="text-xs text-gray-500">
                         <summary className="cursor-pointer hover:text-gray-300">📖 Formula reference</summary>
                         <div className="mt-2 bg-gray-800 rounded p-2 font-mono text-gray-400 leading-relaxed">
-                            <div className="mb-1 text-gray-300">Stability Index</div>
+                            <div className="mb-1 text-gray-300">Stability Index (AïnO-intrinsic)</div>
                             <div>= 1 – (0.4·norm_variance(modeIntensity)</div>
                             <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;+ 0.3·norm(crisisCount/10)</div>
                             <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;+ 0.3·norm(avgDivergence/0.5))</div>
-                            <div className="mt-2 mb-1 text-gray-300">Resilience Score</div>
-                            <div>= 1/(1 + avgCrisisDuration·10/ticks)</div>
-                            <div>&nbsp;&nbsp;– 0.4·(1 – finalAïnOHealth)</div>
-                            <div>&nbsp;&nbsp;– 0.3·finalCaptureRisk</div>
+                            <div className="mt-2 mb-1 text-gray-300">Resilience Score (baseline-relative)</div>
+                            <div>= 0.45·clamp(0.5 + (ainoHealth–baseHealth)·2)</div>
+                            <div>&nbsp;&nbsp;+ 0.30·(1/(1 + avgCrisisDuration·10/ticks))</div>
+                            <div>&nbsp;&nbsp;+ 0.25·(1 – captureRisk)</div>
+                            <div className="mt-1 text-gray-500">0.50 = AïnO matched baseline exactly</div>
                             <div className="mt-2 mb-1 text-gray-300">Governance Score</div>
                             <div>= 0.5·StabilityIndex + 0.5·ResilienceScore</div>
+                            <div className="mt-1 text-gray-500">Thresholds: ≥0.65 Strong · ≥0.50 Adequate · ≥0.35 Weak</div>
                         </div>
                     </details>
                 </>
